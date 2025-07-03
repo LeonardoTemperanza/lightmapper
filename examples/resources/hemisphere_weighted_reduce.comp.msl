@@ -1,0 +1,83 @@
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wmissing-braces"
+
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+template<typename T, size_t Num>
+struct spvUnsafeArray
+{
+    T elements[Num ? Num : 1];
+    
+    thread T& operator [] (size_t pos) thread
+    {
+        return elements[pos];
+    }
+    constexpr const thread T& operator [] (size_t pos) const thread
+    {
+        return elements[pos];
+    }
+    
+    device T& operator [] (size_t pos) device
+    {
+        return elements[pos];
+    }
+    constexpr const device T& operator [] (size_t pos) const device
+    {
+        return elements[pos];
+    }
+    
+    constexpr const constant T& operator [] (size_t pos) const constant
+    {
+        return elements[pos];
+    }
+    
+    threadgroup T& operator [] (size_t pos) threadgroup
+    {
+        return elements[pos];
+    }
+    constexpr const threadgroup T& operator [] (size_t pos) const threadgroup
+    {
+        return elements[pos];
+    }
+};
+
+struct type_Uniforms
+{
+    uint2 tex_offset;
+};
+
+kernel void main0(constant type_Uniforms& Uniforms [[buffer(0)]], texture2d<float> input_tex [[texture(0)]], texture2d<float> weight_tex [[texture(1)]], texture2d<float, access::write> output_tex [[texture(2)]], uint3 gl_WorkGroupID [[threadgroup_position_in_grid]], uint3 gl_LocalInvocationID [[thread_position_in_threadgroup]])
+{
+    threadgroup spvUnsafeArray<float4, 64> shared_mem;
+    uint _53 = (gl_LocalInvocationID.y * 8u) + gl_LocalInvocationID.x;
+    uint2 _61 = Uniforms.tex_offset + (((gl_WorkGroupID.xy * uint2(8u)) + gl_LocalInvocationID.xy) * uint2(2u));
+    float4 _63 = input_tex.read(uint2(_61), 0u);
+    uint2 _64 = _61 + uint2(1u, 0u);
+    float4 _65 = input_tex.read(uint2(_64), 0u);
+    uint2 _66 = _61 + uint2(0u, 1u);
+    float4 _67 = input_tex.read(uint2(_66), 0u);
+    uint2 _68 = _61 + uint2(1u);
+    float4 _69 = input_tex.read(uint2(_68), 0u);
+    float4 _71 = weight_tex.read(uint2(_61), 0u);
+    float4 _72 = weight_tex.read(uint2(_64), 0u);
+    float4 _73 = weight_tex.read(uint2(_66), 0u);
+    float4 _74 = weight_tex.read(uint2(_68), 0u);
+    shared_mem[_53] = ((float4(_63.xyz * _71.x, _63.w * _71.y) + float4(_65.xyz * _72.x, _65.w * _72.y)) + float4(_67.xyz * _73.x, _67.w * _73.y)) + float4(_69.xyz * _74.x, _69.w * _74.y);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint _120 = 32u; _120 > 0u; _120 = _120 >> 1u)
+    {
+        if (_53 < _120)
+        {
+            shared_mem[_53] += shared_mem[_53 + _120];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (_53 == 0u)
+    {
+        output_tex.write(shared_mem[0], uint2((Uniforms.tex_offset + gl_WorkGroupID.xy)));
+    }
+}
+

@@ -1,0 +1,29 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct type_Uniforms
+{
+    float4x4 model_to_world;
+    float4x4 model_to_world_normal;
+    float4x4 world_to_proj;
+};
+
+struct main0_out
+{
+    float4 gl_Position [[position]];
+};
+
+struct main0_in
+{
+    float3 in_var_TEXCOORD0 [[attribute(0)]];
+};
+
+vertex main0_out main0(main0_in in [[stage_in]], constant type_Uniforms& Uniforms [[buffer(0)]])
+{
+    main0_out out = {};
+    out.gl_Position = Uniforms.world_to_proj * (Uniforms.model_to_world * float4(in.in_var_TEXCOORD0, 1.0));
+    return out;
+}
+
