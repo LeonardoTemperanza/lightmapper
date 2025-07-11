@@ -60,6 +60,63 @@ destroy_shaders :: proc(device: ^sdl.GPUDevice, shaders: Shaders)
     sdl.ReleaseGPUComputePipeline(device, shaders.hemi_weighted_reduce)
 }
 
+// API fast-path for creating lightmap textures.
+@(require_results)
+make_lightmap :: proc(device: ^sdl.GPUDevice, size: [2]u32, format: sdl.GPUTextureFormat) -> ^sdl.GPUTexture
+{
+    // Could be sampled for indirect passess, and COLOR_TARGET is needed for blitting.
+    lightmap_usage := sdl.GPUTextureUsageFlags { .SAMPLER, .COLOR_TARGET }
+    lightmap := sdl.CreateGPUTexture(device, {
+        type = .D2,
+        format = format,
+        width = auto_cast size.x,
+        height = auto_cast size.y,
+        layer_count_or_depth = 1,
+        num_levels = 1,  // Lightmaps are rarely minified.
+        usage = lightmap_usage,
+    })
+
+    // Fill in with black pixels.
+    buf_size: u32 = size.x * size.y * sdl.GPUTextureFormatTexelBlockSize(format)
+    transfer_buf := sdl.CreateGPUTransferBuffer(device, {
+        usage = .UPLOAD,
+        size  = buf_size
+    })
+    defer sdl.ReleaseGPUTransferBuffer(device, transfer_buf)
+
+    transfer_dst := sdl.MapGPUTransferBuffer(device, transfer_buf, false)
+    intr.mem_zero(transfer_dst, buf_size)
+    sdl.UnmapGPUTransferBuffer(device, transfer_buf)
+
+    cmd_buf := sdl.AcquireGPUCommandBuffer(device)
+    pass := sdl.BeginGPUCopyPass(cmd_buf)
+    sdl.UploadToGPUTexture(
+        pass,
+        source = {
+            transfer_buffer = transfer_buf,
+            offset = 0,
+        },
+        destination = {
+            texture = lightmap,
+            w = auto_cast size.x,
+            h = auto_cast size.y,
+            d = 1,
+        },
+        cycle = false
+    )
+    sdl.EndGPUCopyPass(pass)
+
+    ok_s := sdl.SubmitGPUCommandBuffer(cmd_buf)
+    assert(ok_s)
+
+    return lightmap
+}
+
+destroy_lightmap :: proc(device: ^sdl.GPUDevice, lightmap: ^sdl.GPUTexture)
+{
+    sdl.ReleaseGPUTexture(device, lightmap)
+}
+
 // Creates the context for this library. Can be used to render multiple lightmaps.
 // You can create a new lightmap with make_lightmap and you can change the current lightmap
 // with set_target_lightmap.

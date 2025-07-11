@@ -87,16 +87,8 @@ main :: proc()
     })
     defer sdl.ReleaseGPUSampler(device, linear_sampler)
 
-    lightmap := sdl.CreateGPUTexture(device, {
-        type = .D2,
-        format = LIGHTMAP_FORMAT,
-        width = auto_cast LIGHTMAP_SIZE.x,
-        height = auto_cast LIGHTMAP_SIZE.y,
-        layer_count_or_depth = 1,
-        num_levels = 1,
-        usage = { .SAMPLER, .COLOR_TARGET },
-    })
-    defer sdl.ReleaseGPUTexture(device, lightmap)
+    lightmap := lm.make_lightmap(device, LIGHTMAP_SIZE, LIGHTMAP_FORMAT)
+    defer lm.destroy_lightmap(device, lightmap)
 
     // Specify your buffer formats.
     mesh_info := lm.Mesh {

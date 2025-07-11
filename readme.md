@@ -6,16 +6,22 @@ With this library, your existing real-time SDL_GPU renderer can be easily used t
 
 **lightmapper_odin** can be used to bake Ambient Occlusion, as well as Global Illumination depending on the number of iterations used.
 Any kind of light or emissive surface is supported as long as they are simply drawn using their emissive colors.
-Lightmap UVs have specific requirements, e.g. no intersections; for this reason it may be a good idea to have them be automatically
+Lightmap UVs have specific requirements, e.g. no uv-overlap; for this reason it may be a good idea to have them be automatically
 generated, and let your artist work on more enjoyable things. You could either write your own tool for this or you could use one of the following:
 - [thekla_atlas](https://github.com/Thekla/thekla_atlas)
 - [xatlas](https://github.com/jpcy/xatlas)
 - [uvatlas](https://github.com/microsoft/UVAtlas)
 
+Depending on the requirements of your application, you may need to compress these lightmaps. As you probably know, GPUs have special hardware for sampling compressed textures at runtime.
+One of these supported formats is BC6H, which was specifically designed for HDR textures.
+To compress to BC6H you can use one of the following tools:
+- [GPURealTimeBC6H](https://github.com/knarkowicz/GPURealTimeBC6H.git)
+- [DirectXTex](https://github.com/microsoft/DirectXTex.git)
+
 This library uses the hemicube approach, which is a somewhat old-school method for baking lightmaps, and although it is quite slow for big scenes, I think its ease of use
 and integration into an existing renderer makes it still a very good choice for many applications.
 
-## Example
+## Library Usage
 ```odin
 import lm "lightmapper"
 
@@ -24,8 +30,9 @@ main :: proc()
     // Initialization...
 
     // Compile this library's shaders (which can be found in "shaders/") with whichever method/pipeline you use...
+    lm_shaders := /* ... */
 
-    lm_ctx := lm.init(device, lm_shaders, .R16G16B16A16_FLOAT, /* depth format */,
+    lm_ctx := lm.init(device, lm_shaders, .R16G16B16A16_FLOAT, /* put your depth format here */,
                       // Optional: Resolution of the hemisphere renders.
                       hemisphere_resolution = 256,
                       // Optional: Hemisphere min/max draw distance.
