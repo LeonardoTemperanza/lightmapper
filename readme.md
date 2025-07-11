@@ -83,11 +83,11 @@ main :: proc()
         // of the surrounding valid pixels)
         for i in 0..<16
         {
-            lm.postprocess_dilate(lm_ctx)
-            lm.postprocess_dilate(lm_ctx)
+            lm.postprocess_dilate(&lm_ctx)
+            lm.postprocess_dilate(&lm_ctx)
         }
-        lm.postprocess_box_blur(lm_ctx)
-        lm.postprocess_dilate(lm_ctx)
+        lm.postprocess_box_blur(&lm_ctx)
+        lm.postprocess_dilate(&lm_ctx)
 
         lm.bake_end(&lm_ctx, lightmap)
     }
