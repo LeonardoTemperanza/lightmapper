@@ -29,11 +29,18 @@ import "core:fmt"
 import intr "base:intrinsics"
 import "core:math"
 import "core:math/linalg"
+import "core:mem"
+import "core:os"
+import "core:c"
 
+import stbi "vendor:stb/image"
 import sdl "vendor:sdl3"
 import lm "../"
 
-BACKGROUND_COLOR :: [3]f32 { 1, 0.2, 0.2 }
+BACKGROUND_COLOR :: [3]f32 { 0.6, 0.5, 0.7 }
+
+LIGHTMAP_SIZE :: [2]u32 { 654, 654 }
+LIGHTMAP_FORMAT :: sdl.GPUTextureFormat.R16G16B16A16_FLOAT
 
 main :: proc()
 {
@@ -43,15 +50,18 @@ main :: proc()
 
     ts_freq := sdl.GetPerformanceFrequency()
 
-    mesh := upload_mesh(device)
+    mesh := upload_mesh(device, MESH_VERTS, MESH_INDICES)
     defer cleanup_mesh(device, &mesh)
 
-    // Pipelines must be compatible with the lightmapping passes (hemisphere_target_format)
-    pipelines := make_pipelines(device)
+    skysphere, sky_tex := upload_sky_resources(device)
+    defer cleanup_sky_resources(device, &skysphere, &sky_tex)
+
+    // Pipelines must be compatible with the lightmapping passes (hemisphere target formats that you provide)
+    pipelines := make_pipelines(device, window)
     defer cleanup_pipelines(device, &pipelines)
 
     // There are many different strategies for loading shaders
-    // in SDL GPU, so this library leaves this responsibility
+    // in SDL_GPU, so this library leaves this responsibility
     // to the user. The shaders can be found in this repository.
     // This example will just use precompiled shaders embedded
     // into the executable (in SPIRV and MSL formats, for windows,
@@ -59,7 +69,10 @@ main :: proc()
     lm_shaders := make_lm_shaders(device)
     defer lm.destroy_shaders(device, lm_shaders)
 
-    _lm_ctx := lm.init(device, lm_shaders, .B8G8R8A8_UNORM, get_depth_format(device), background_color = BACKGROUND_COLOR)
+    _lm_ctx := lm.init(device, lm_shaders, LIGHTMAP_FORMAT, get_depth_format(device),
+                       background_color = BACKGROUND_COLOR,
+                       interpolation_passes = 2,
+                       hemisphere_resolution = 256)
     lm_ctx  := &_lm_ctx
     defer lm.destroy(lm_ctx)
 
@@ -74,14 +87,15 @@ main :: proc()
     })
     defer sdl.ReleaseGPUSampler(device, linear_sampler)
 
-    LIGHTMAP_SIZE: [2]int : { 1024, 1024 }
-
-    // The format is fixed to .R16G16B16A16_FLOAT. You're free
-    // to convert it to whichever format you prefer. This texture
-    // is sampleable so it can be fed back to your renderer,
-    // to get multiple bounces (lightmap.tex to access it).
-    lightmap := lm.make_lightmap(lm_ctx, LIGHTMAP_SIZE)
-    defer lm.delete_lightmap(lm_ctx, lightmap)
+    lightmap := sdl.CreateGPUTexture(device, {
+        type = .D2,
+        format = LIGHTMAP_FORMAT,
+        width = auto_cast LIGHTMAP_SIZE.x,
+        height = auto_cast LIGHTMAP_SIZE.y,
+        layer_count_or_depth = 1,
+        num_levels = 1,
+        usage = { .SAMPLER, .COLOR_TARGET },
+    })
 
     // Specify your buffer formats.
     mesh_info := lm.Mesh {
@@ -113,30 +127,18 @@ main :: proc()
         use_indices = true,
     }
 
-    // Submit the first frame. Makes it possible to debug lightmap baking.
-    when true
-    {
-        cmd_buf := sdl.AcquireGPUCommandBuffer(device)
-        swapchain: ^sdl.GPUTexture
-        ok := sdl.WaitAndAcquireGPUSwapchainTexture(cmd_buf, window, &swapchain, nil, nil)
-        ensure(ok)
-        ok = sdl.SubmitGPUCommandBuffer(cmd_buf)
-        ensure(ok)
-        ok = sdl.WaitForGPUSwapchain(device, window)
-        ensure(ok)
-    }
-
     // Build lightmap.
     {
         fmt.println("Started to bake lightmap...")
         bake_begin_ts := sdl.GetPerformanceCounter()
 
-        NUM_BOUNCES :: 1  // 1 one ambient occlusion only, 2 or more for global illumination.
+        NUM_BOUNCES :: 5  // 1 for ambient occlusion only, 2 or more for global illumination.
         for bounce in 0..<NUM_BOUNCES
         {
-            lm.set_target_lightmap(lm_ctx, lightmap)
+            lm.bake_begin(lm_ctx, LIGHTMAP_SIZE, LIGHTMAP_FORMAT)
+
             model_to_world: matrix[4, 4]f32 = 1
-            lm.set_target_mesh(lm_ctx, mesh_info, model_to_world)
+            lm.set_current_mesh(lm_ctx, mesh_info, model_to_world)
 
             for render_params in lm.bake_iterate_begin(lm_ctx)
             {
@@ -144,45 +146,62 @@ main :: proc()
 
                 cmd_buf := render_params.cmd_buf
 
-                render_scene(cmd_buf, render_params, lightmap.tex, linear_sampler, pipelines, mesh)
+                render_scene(cmd_buf, render_params, lightmap, linear_sampler, pipelines, mesh, skysphere, sky_tex)
 
-                progress := lm.bake_progress(lm_ctx)
-                //fmt.printfln("Bounce %v, progress: %v", bounce, progress)
+                @(static) print_counter := 0
+                if print_counter > 20000
+                {
+                    fmt.printfln("Bounce %v, progress: %v", bounce, lm.bake_progress(lm_ctx))
+                    print_counter = 0
+                }
+                print_counter += 1
             }
 
-            bake_end_ts := sdl.GetPerformanceCounter()
-            elapsed := f32(f64((bake_end_ts - bake_begin_ts)*1000) / f64(ts_freq)) / 1000.0
+            fmt.printfln("Bounce %v, progress: %v", bounce, lm.bake_progress(lm_ctx))
 
-            when ODIN_DEBUG {
-                fmt.printfln("Done with lightmap baking! (%.6fs) (DEBUG BUILD)", elapsed)
-            } else {
-                fmt.printfln("Done with lightmap baking! (%.6fs)", elapsed)
+            // Post-process the lightmap as you wish.
+            for i in 0..<16
+            {
+                lm.postprocess_dilate(lm_ctx)
+                lm.postprocess_dilate(lm_ctx)
             }
+            lm.postprocess_box_blur(lm_ctx)
+            lm.postprocess_dilate(lm_ctx)
+
+            lm.bake_end(lm_ctx, lightmap)
+        }
+
+        bake_end_ts := sdl.GetPerformanceCounter()
+        elapsed := f32(f64((bake_end_ts - bake_begin_ts)*1000) / f64(ts_freq)) / 1000.0
+
+        when ODIN_DEBUG {
+            fmt.printfln("Done with lightmap baking! (%.6fs) (DEBUG BUILD)", elapsed)
+        } else {
+            fmt.printfln("Done with lightmap baking! (%.6fs)", elapsed)
         }
     }
 
-    // Submit the first frame. Makes it possible to debug lightmap baking.
-    when true
-    {
-        cmd_buf = sdl.AcquireGPUCommandBuffer(device)
-        ok = sdl.WaitAndAcquireGPUSwapchainTexture(cmd_buf, window, &swapchain, nil, nil)
-        ensure(ok)
-        ok = sdl.SubmitGPUCommandBuffer(cmd_buf)
-        ensure(ok)
-        ok = sdl.WaitForGPUSwapchain(device, window)
-        ensure(ok)
-    }
-
     sdl.ShowWindow(window)
-    view_results(window, device, lightmap.tex, linear_sampler, pipelines, mesh)
+    view_results(window, device, lightmap, pipelines, mesh, skysphere, sky_tex)
 }
 
-view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.GPUTexture, lm_sampler: ^sdl.GPUSampler, pipelines: Pipelines, mesh: Mesh_GPU)
+view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.GPUTexture, pipelines: Pipelines, mesh: Mesh_GPU, skysphere: Mesh_GPU, sky_tex: ^sdl.GPUTexture)
 {
     fmt.println("A view of the result will be shown.")
     fmt.println("To look around using first person camera controls, press Space. (Press Space again to go back)")
 
     defer cleanup_screen_resources(device)
+
+    linear_sampler := sdl.CreateGPUSampler(device, {
+        min_filter = .LINEAR,
+        mag_filter = .LINEAR,
+        mipmap_mode = .LINEAR,
+        address_mode_u = .REPEAT,
+        address_mode_v = .REPEAT,
+        address_mode_w = .REPEAT,
+        max_lod = 1000,
+    })
+    defer sdl.ReleaseGPUSampler(device, linear_sampler)
 
     window_size: [2]i32
     for
@@ -217,27 +236,27 @@ view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.G
 
         world_to_view := compute_world_to_view()
 
-        color_target := sdl.GPUColorTargetInfo {
-            texture = swapchain,
-            clear_color = { BACKGROUND_COLOR.x, BACKGROUND_COLOR.y, BACKGROUND_COLOR.z, 1.0 },
-            load_op = .CLEAR,
-            store_op = .STORE,
-        }
-        depth_target := sdl.GPUDepthStencilTargetInfo {
-            texture = MAIN_DEPTH_TEXTURE,
-            clear_depth = 1.0,
-            load_op = .CLEAR,
-            store_op = .STORE,
-            stencil_load_op = .DONT_CARE,
-            stencil_store_op = .DONT_CARE,
-        }
-
         // Main pass
         {
+            color_target := sdl.GPUColorTargetInfo {
+                texture = MAIN_TARGET_TEXTURE,
+                clear_color = { BACKGROUND_COLOR.x, BACKGROUND_COLOR.y, BACKGROUND_COLOR.z, 1.0 },
+                load_op = .CLEAR,
+                store_op = .STORE,
+            }
+            depth_target := sdl.GPUDepthStencilTargetInfo {
+                texture = MAIN_DEPTH_TEXTURE,
+                clear_depth = 1.0,
+                load_op = .CLEAR,
+                store_op = .STORE,
+                stencil_load_op = .DONT_CARE,
+                stencil_store_op = .DONT_CARE,
+            }
+
             main_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target)
             defer sdl.EndGPURenderPass(main_pass)
 
-            lightmap_screen_percent: f32 = 0.3
+            lightmap_screen_percent: f32 = 0.5
             render_screen_percent := 1.0 - lightmap_screen_percent
             render_screen_size := [2]f32 { auto_cast (f32(window_size.x) * render_screen_percent), auto_cast window_size.y }
             lightmap_screen_size := [2]f32 { auto_cast (f32(window_size.x) * lightmap_screen_percent), auto_cast window_size.y } + 1.0
@@ -253,8 +272,36 @@ view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.G
                 view_to_proj = linalg.matrix4_perspective_f32(math.RAD_PER_DEG * 59.0, render_viewport_aspect_ratio, 0.1, 1000.0, false),
                 pass = main_pass,
             }
-            render_scene(cmd_buf, render_params, lm_tex, lm_sampler, pipelines, mesh)
-            show_texture(cmd_buf, main_pass, lm_tex, lm_sampler, pipelines, { 1, 0 } * render_screen_size, lightmap_screen_size)
+            render_scene(cmd_buf, render_params, lm_tex, linear_sampler, pipelines, mesh, skysphere, sky_tex)
+            show_texture(cmd_buf, main_pass, lm_tex, linear_sampler, pipelines, { 1, 0 } * render_screen_size, lightmap_screen_size)
+        }
+
+        // Tonemap pass
+        {
+            color_target := sdl.GPUColorTargetInfo {
+                texture = swapchain,
+                clear_color = { 0.0, 0.0, 0.0, 1.0 },
+                load_op = .DONT_CARE,
+                store_op = .STORE,
+                cycle = false
+            }
+            pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, nil)
+            defer sdl.EndGPURenderPass(pass)
+
+            tex_binding := sdl.GPUTextureSamplerBinding {
+                texture = MAIN_TARGET_TEXTURE,
+                sampler = linear_sampler,
+            }
+            sdl.BindGPUFragmentSamplers(pass, 0, &tex_binding, 1)
+            sdl.BindGPUGraphicsPipeline(pass, pipelines.tonemap)
+            sdl.DrawGPUPrimitives(
+                pass,
+                num_vertices   = 6,
+                num_instances  = 1,
+                first_vertex   = 0,
+                first_instance = 0
+            )
+
         }
 
         ok = sdl.SubmitGPUCommandBuffer(cmd_buf)
@@ -264,7 +311,7 @@ view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.G
     }
 }
 
-render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Params, lm_tex: ^sdl.GPUTexture, lm_sampler: ^sdl.GPUSampler, pipelines: Pipelines, mesh: Mesh_GPU)
+render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Params, lm_tex: ^sdl.GPUTexture, lm_sampler: ^sdl.GPUSampler, pipelines: Pipelines, mesh: Mesh_GPU, skysphere: Mesh_GPU, sky_tex: ^sdl.GPUTexture)
 {
     assert(params.pass != nil)
 
@@ -285,49 +332,98 @@ render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Par
     })
 
     // Render mesh
-    Uniforms :: struct
+    for i in 0..<1
     {
-        model_to_world: matrix[4, 4]f32,
-        model_to_world_normal: matrix[4, 4]f32,
-        world_to_proj: matrix[4, 4]f32
+        Uniforms :: struct
+        {
+            model_to_world: matrix[4, 4]f32,
+            model_to_world_normal: matrix[4, 4]f32,
+            world_to_proj: matrix[4, 4]f32
+        }
+        uniforms := Uniforms {
+            model_to_world = 1,  // (identity)
+            model_to_world_normal = 1,
+            world_to_proj = params.view_to_proj * params.world_to_view,
+        }
+        sdl.PushGPUVertexUniformData(cmd_buf, 0, &uniforms, size_of(Uniforms))
+
+        sdl.BindGPUGraphicsPipeline(params.pass, pipelines.lit)
+
+        lm_tex_binding := sdl.GPUTextureSamplerBinding {
+            texture = lm_tex,
+            sampler = lm_sampler,
+        }
+        sdl.BindGPUFragmentSamplers(params.pass, 0, &lm_tex_binding, 1)
+
+        vertex_binding := sdl.GPUBufferBinding {
+            buffer = mesh.verts,
+            offset = 0
+        }
+        index_binding := sdl.GPUBufferBinding {
+            buffer = mesh.indices,
+            offset = 0
+        }
+
+        // TODO TODO Change lm_sampler
+
+        tex_binding := sdl.GPUTextureSamplerBinding {
+            texture = lm_tex,
+            sampler = lm_sampler,
+        }
+        sdl.BindGPUFragmentSamplers(params.pass, 0, &tex_binding, 1)
+
+        sdl.BindGPUVertexBuffers(params.pass, 0, &vertex_binding, 1)
+        sdl.BindGPUIndexBuffer(params.pass, index_binding, ._32BIT)
+        sdl.DrawGPUIndexedPrimitives(
+            params.pass,
+            num_indices    = auto_cast len(MESH_INDICES),
+            num_instances  = 1,
+            first_index    = 0,
+            vertex_offset  = 0,
+            first_instance = 0
+        )
     }
-    uniforms := Uniforms {
-        model_to_world = 1,  // (identity)
-        model_to_world_normal = 1,
-        world_to_proj = params.view_to_proj * params.world_to_view,
+
+    // Render sky
+    {
+        vertex_binding := sdl.GPUBufferBinding {
+            buffer = skysphere.verts,
+            offset = 0
+        }
+        index_binding := sdl.GPUBufferBinding {
+            buffer = skysphere.indices,
+            offset = 0
+        }
+
+        Uniforms :: struct
+        {
+            world_to_view: matrix[4, 4]f32,
+            view_to_proj: matrix[4, 4]f32,
+        }
+        uniforms := Uniforms {
+            world_to_view = params.world_to_view,
+            view_to_proj = params.view_to_proj,
+        }
+        sdl.PushGPUVertexUniformData(cmd_buf, 0, &uniforms, size_of(Uniforms))
+        sdl.BindGPUGraphicsPipeline(params.pass, pipelines.sky)
+
+        lm_tex_binding := sdl.GPUTextureSamplerBinding {
+            texture = sky_tex,
+            sampler = lm_sampler,
+        }
+        sdl.BindGPUFragmentSamplers(params.pass, 0, &lm_tex_binding, 1)
+
+        sdl.BindGPUVertexBuffers(params.pass, 0, &vertex_binding, 1)
+        sdl.BindGPUIndexBuffer(params.pass, index_binding, ._32BIT)
+        sdl.DrawGPUIndexedPrimitives(
+            params.pass,
+            num_indices    = auto_cast len(SKYSPHERE_INDICES),
+            num_instances  = 1,
+            first_index    = 0,
+            vertex_offset  = 0,
+            first_instance = 0
+        )
     }
-    sdl.PushGPUVertexUniformData(cmd_buf, 0, &uniforms, size_of(Uniforms))
-
-    sdl.BindGPUGraphicsPipeline(params.pass, pipelines.lit)
-
-    lm_tex_binding := sdl.GPUTextureSamplerBinding {
-        texture = lm_tex,
-        sampler = lm_sampler,
-    }
-    sdl.BindGPUFragmentSamplers(params.pass, 0, &lm_tex_binding, 1)
-
-    vertex_binding := sdl.GPUBufferBinding {
-        buffer = mesh.verts,
-        offset = 0
-    }
-    index_binding := sdl.GPUBufferBinding {
-        buffer = mesh.indices,
-        offset = 0
-    }
-
-    sdl.BindGPUVertexBuffers(params.pass, 0, &vertex_binding, 1)
-    sdl.BindGPUIndexBuffer(params.pass, index_binding, ._32BIT)
-    sdl.DrawGPUIndexedPrimitives(
-        params.pass,
-        num_indices    = auto_cast len(MESH_INDICES),
-        num_instances  = 1,
-        first_index    = 0,
-        vertex_offset  = 0,
-        first_instance = 0
-    )
-
-    // Render skybox
-
 }
 
 show_texture :: proc(cmd_buf: ^sdl.GPUCommandBuffer, pass: ^sdl.GPURenderPass, texture: ^sdl.GPUTexture, sampler: ^sdl.GPUSampler, pipelines: Pipelines, viewport_offset: [2]f32, viewport_size: [2]f32)
@@ -385,8 +481,9 @@ Mesh_GPU :: struct
 Pipelines :: struct
 {
     lit: ^sdl.GPUGraphicsPipeline,
-    depth_only: ^sdl.GPUGraphicsPipeline,
     fullscreen_sample_tex: ^sdl.GPUGraphicsPipeline,
+    sky: ^sdl.GPUGraphicsPipeline,
+    tonemap: ^sdl.GPUGraphicsPipeline,
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -394,13 +491,26 @@ Pipelines :: struct
 // integrate this library in your codebase, as it's mostly boilerplate.
 
 MAIN_DEPTH_TEXTURE: ^sdl.GPUTexture
+MAIN_TARGET_TEXTURE: ^sdl.GPUTexture
 MAIN_TARGET_FORMAT: sdl.GPUTextureFormat
 
 rebuild_screen_resources :: proc(device: ^sdl.GPUDevice, new_size: [2]i32)
 {
     assert(new_size.x > 0 && new_size.y > 0)
-    if MAIN_DEPTH_TEXTURE != nil do sdl.ReleaseGPUTexture(device, MAIN_DEPTH_TEXTURE)
 
+    sdl.ReleaseGPUTexture(device, MAIN_TARGET_TEXTURE)
+    MAIN_TARGET_TEXTURE = sdl.CreateGPUTexture(device, {
+        type = .D2,
+        format = LIGHTMAP_FORMAT,
+        width = auto_cast new_size.x,
+        height = auto_cast new_size.y,
+        layer_count_or_depth = 1,
+        num_levels = 1,
+        usage = { .SAMPLER, .COLOR_TARGET },
+        sample_count = ._1,
+    })
+
+    sdl.ReleaseGPUTexture(device, MAIN_DEPTH_TEXTURE)
     MAIN_DEPTH_TEXTURE = sdl.CreateGPUTexture(device, {
         type = .D2,
         format = get_depth_format(device),
@@ -415,15 +525,16 @@ rebuild_screen_resources :: proc(device: ^sdl.GPUDevice, new_size: [2]i32)
 
 cleanup_screen_resources :: proc(device: ^sdl.GPUDevice)
 {
-    if MAIN_DEPTH_TEXTURE != nil do sdl.ReleaseGPUTexture(device, MAIN_DEPTH_TEXTURE)
+    sdl.ReleaseGPUTexture(device, MAIN_DEPTH_TEXTURE)
+    sdl.ReleaseGPUTexture(device, MAIN_TARGET_TEXTURE)
 }
 
-upload_mesh :: proc(device: ^sdl.GPUDevice) -> Mesh_GPU
+upload_mesh :: proc(device: ^sdl.GPUDevice, mesh_verts: []Vertex, mesh_indices: []u32) -> Mesh_GPU
 {
     mesh: Mesh_GPU
 
-    vert_buf_size: u32  = auto_cast len(MESH_VERTS) * size_of(Vertex)
-    index_buf_size: u32 = auto_cast len(MESH_INDICES) * size_of(u32)
+    vert_buf_size: u32  = auto_cast len(mesh_verts) * size_of(Vertex)
+    index_buf_size: u32 = auto_cast len(mesh_indices) * size_of(u32)
 
     mesh.verts = sdl.CreateGPUBuffer(device, {
         usage = { .VERTEX },
@@ -450,11 +561,11 @@ upload_mesh :: proc(device: ^sdl.GPUDevice) -> Mesh_GPU
     defer sdl.ReleaseGPUTransferBuffer(device, index_transfer_buf)
 
     vert_ptr := sdl.MapGPUTransferBuffer(device, vert_transfer_buf, false)
-    intr.mem_copy(vert_ptr, raw_data(MESH_VERTS), vert_buf_size)
+    intr.mem_copy(vert_ptr, raw_data(mesh_verts), vert_buf_size)
     sdl.UnmapGPUTransferBuffer(device, vert_transfer_buf)
 
     index_ptr := sdl.MapGPUTransferBuffer(device, index_transfer_buf, false)
-    intr.mem_copy(index_ptr, raw_data(MESH_INDICES), index_buf_size)
+    intr.mem_copy(index_ptr, raw_data(mesh_indices), index_buf_size)
     sdl.UnmapGPUTransferBuffer(device, index_transfer_buf)
 
     // Upload transfer data
@@ -505,12 +616,98 @@ cleanup_mesh :: proc(device: ^sdl.GPUDevice, mesh: ^Mesh_GPU)
     mesh^ = {}
 }
 
+SKYSPHERE_VERTS   := #load("resources/skysphere_verts", []Vertex)
+SKYSPHERE_INDICES := #load("resources/skysphere_indices", []u32)
+SKY_TEXTURE := #load("resources/sky.hdr")
+
+upload_sky_resources :: proc(device: ^sdl.GPUDevice) -> (Mesh_GPU, ^sdl.GPUTexture)
+{
+    skysphere_mesh := upload_mesh(device, SKYSPHERE_VERTS, SKYSPHERE_INDICES)
+
+    // Upload environment map texture
+    sky_tex: ^sdl.GPUTexture
+    {
+        width, height, num_channels: c.int
+        loaded_img := stbi.loadf_from_memory(raw_data(SKY_TEXTURE), auto_cast len(SKY_TEXTURE), &width, &height, &num_channels, 4)
+        defer stbi.image_free(loaded_img)
+
+        // Convert the image to f16.
+        converted_img := make([][4]f16, width * height)
+        defer delete(converted_img)
+
+        for i in 0..<width * height
+        {
+            pixel: [4]f32
+            pixel[0] = loaded_img[i * 4 + 0]
+            pixel[1] = loaded_img[i * 4 + 1]
+            pixel[2] = loaded_img[i * 4 + 2]
+            pixel[3] = loaded_img[i * 4 + 3]
+            converted_img[i] = { auto_cast pixel[0], auto_cast pixel[1], auto_cast pixel[2], auto_cast pixel[3] }
+        }
+
+        num_mip_levels := 2
+
+        // Upload to GPU
+        sky_tex = sdl.CreateGPUTexture(device, {
+            type = .D2,
+            format = .R16G16B16A16_FLOAT,
+            width = auto_cast width,
+            height = auto_cast height,
+            layer_count_or_depth = 1,
+            num_levels = auto_cast max(num_mip_levels, 1),
+            usage = { .SAMPLER, .COLOR_TARGET },  // COLOR_TARGET is needed to generate mipmaps.
+        })
+
+        transfer_buf := sdl.CreateGPUTransferBuffer(device, {
+            usage = .UPLOAD,
+            size  = auto_cast len(converted_img) * size_of(converted_img[0])
+        })
+        defer sdl.ReleaseGPUTransferBuffer(device, transfer_buf)
+
+        transfer_dst := sdl.MapGPUTransferBuffer(device, transfer_buf, false)
+        intr.mem_copy(transfer_dst, raw_data(converted_img), len(converted_img) * size_of(converted_img[0]))
+        sdl.UnmapGPUTransferBuffer(device, transfer_buf)
+
+        cmd_buf := sdl.AcquireGPUCommandBuffer(device)
+        pass := sdl.BeginGPUCopyPass(cmd_buf)
+        sdl.UploadToGPUTexture(
+            pass,
+            source = {
+                transfer_buffer = transfer_buf,
+                offset = 0,
+            },
+            destination = {
+                texture = sky_tex,
+                w = auto_cast width,
+                h = auto_cast height,
+                d = 1,
+            },
+            cycle = false
+        )
+        sdl.EndGPUCopyPass(pass)
+
+        if num_mip_levels > 1 {
+            sdl.GenerateMipmapsForGPUTexture(cmd_buf, sky_tex)
+        }
+
+        ok_s := sdl.SubmitGPUCommandBuffer(cmd_buf)
+        assert(ok_s)
+    }
+
+    return skysphere_mesh, sky_tex
+}
+
+cleanup_sky_resources :: proc(device: ^sdl.GPUDevice, mesh: ^Mesh_GPU, tex: ^^sdl.GPUTexture)
+{
+    cleanup_mesh(device, mesh)
+    sdl.ReleaseGPUTexture(device, tex^)
+    tex^ = nil
+}
+
 hemi_reduce_spv          :: #load("resources/hemisphere_reduce.comp.spv")
 hemi_weighted_reduce_spv :: #load("resources/hemisphere_weighted_reduce.comp.spv")
 hemi_reduce_msl          :: #load("resources/hemisphere_reduce.comp.msl")
 hemi_weighted_reduce_msl :: #load("resources/hemisphere_weighted_reduce.comp.msl")
-blit_lightmap_spv        :: #load("resources/blit_lightmap.frag.spv")
-blit_lightmap_msl        :: #load("resources/blit_lightmap.frag.msl")
 
 make_lm_shaders :: proc(device: ^sdl.GPUDevice) -> lm.Shaders
 {
@@ -537,8 +734,8 @@ make_lm_shaders :: proc(device: ^sdl.GPUDevice) -> lm.Shaders
             threadcount_z = 1,
         }),
         hemi_weighted_reduce = sdl.CreateGPUComputePipeline(device, {
-            code_size = len(hemi_reduce_spv) if use_spv else len(hemi_reduce_msl),
-            code = raw_data(hemi_reduce_spv) if use_spv else raw_data(hemi_reduce_msl),
+            code_size = len(hemi_weighted_reduce_spv) if use_spv else len(hemi_weighted_reduce_msl),
+            code = raw_data(hemi_weighted_reduce_spv) if use_spv else raw_data(hemi_weighted_reduce_msl),
             format = { decided_format },
             entrypoint = "main",
             num_samplers = 0,
@@ -551,48 +748,26 @@ make_lm_shaders :: proc(device: ^sdl.GPUDevice) -> lm.Shaders
             threadcount_y = 8,
             threadcount_z = 1,
         }),
-        fullscreen_quad = sdl.CreateGPUShader(device, {
-            code_size = len(fullscreen_quad_vert_spv) if use_spv else len(fullscreen_quad_vert_msl),
-            code = raw_data(fullscreen_quad_vert_spv) if use_spv else raw_data(fullscreen_quad_vert_msl),
-            entrypoint = "main",
-            format = { decided_format },
-            stage = .VERTEX,
-            num_samplers = 0,
-            num_storage_textures = 0,
-            num_storage_buffers  = 0,
-            num_uniform_buffers = 0,
-            props = {}
-        }),
-        blit_lightmap = sdl.CreateGPUShader(device, {
-            code_size = len(blit_lightmap_spv) if use_spv else len(blit_lightmap_msl),
-            code = raw_data(blit_lightmap_spv) if use_spv else raw_data(blit_lightmap_msl),
-            entrypoint = "main",
-            format = { decided_format },
-            stage = .FRAGMENT,
-            num_samplers = 0,
-            num_storage_textures = 1,
-            num_storage_buffers  = 0,
-            num_uniform_buffers = 0,
-            props = {}
-        }),
     }
 }
 
 // User shaders (specific to this example and not part of the library)
 lit_frag_spv             := #load("resources/lit.frag.spv")
-depth_only_vert_spv      := #load("resources/depth_only.vert.spv")
-depth_only_frag_spv      := #load("resources/depth_only.frag.spv")
 model_to_proj_vert_spv   := #load("resources/model_to_proj.vert.spv")
 fullscreen_quad_vert_spv := #load("resources/fullscreen_quad.vert.spv")
 sample_tex_frag_spv      := #load("resources/sample_tex.frag.spv")
+sky_vert_spv             := #load("resources/sky.vert.spv")
+sky_frag_spv             := #load("resources/sky.frag.spv")
+tonemap_frag_spv         := #load("resources/tonemap.frag.spv")
 lit_frag_msl             := #load("resources/lit.frag.msl")
-depth_only_vert_msl      := #load("resources/depth_only.vert.msl")
-depth_only_frag_msl      := #load("resources/depth_only.frag.msl")
 model_to_proj_vert_msl   := #load("resources/model_to_proj.vert.msl")
 fullscreen_quad_vert_msl := #load("resources/fullscreen_quad.vert.msl")
 sample_tex_frag_msl      := #load("resources/sample_tex.frag.msl")
+sky_vert_msl             := #load("resources/sky.vert.msl")
+sky_frag_msl             := #load("resources/sky.frag.msl")
+tonemap_frag_msl         := #load("resources/tonemap.frag.msl")
 
-make_pipelines :: proc(device: ^sdl.GPUDevice) -> Pipelines
+make_pipelines :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Pipelines
 {
     supported_shader_formats := sdl.GetGPUShaderFormats(device)
     use_spv := .SPIRV in supported_shader_formats
@@ -606,30 +781,6 @@ make_pipelines :: proc(device: ^sdl.GPUDevice) -> Pipelines
         format = { decided_format },
         stage = .FRAGMENT,
         num_samplers = 1,
-        num_storage_textures = 0,
-        num_storage_buffers  = 0,
-        num_uniform_buffers = 0,
-        props = {}
-    })
-    depth_only_vert := sdl.CreateGPUShader(device, {
-        code_size = len(depth_only_vert_spv) if use_spv else len(depth_only_vert_msl),
-        code = raw_data(depth_only_vert_spv) if use_spv else raw_data(depth_only_vert_msl),
-        entrypoint = "main",
-        format = { decided_format },
-        stage = .VERTEX,
-        num_samplers = 0,
-        num_storage_textures = 0,
-        num_storage_buffers  = 0,
-        num_uniform_buffers = 1,
-        props = {}
-    })
-    depth_only_frag := sdl.CreateGPUShader(device, {
-        code_size = len(depth_only_frag_spv) if use_spv else len(depth_only_frag_msl),
-        code = raw_data(depth_only_frag_spv) if use_spv else raw_data(depth_only_frag_msl),
-        entrypoint = "main",
-        format = { decided_format },
-        stage = .FRAGMENT,
-        num_samplers = 0,
         num_storage_textures = 0,
         num_storage_buffers  = 0,
         num_uniform_buffers = 0,
@@ -671,14 +822,51 @@ make_pipelines :: proc(device: ^sdl.GPUDevice) -> Pipelines
         num_uniform_buffers = 0,
         props = {}
     })
+    sky_vert := sdl.CreateGPUShader(device, {
+        code_size = len(sky_vert_spv) if use_spv else len(sky_vert_msl),
+        code = raw_data(sky_vert_spv) if use_spv else raw_data(sky_vert_msl),
+        entrypoint = "main",
+        format = { decided_format },
+        stage = .VERTEX,
+        num_samplers = 0,
+        num_storage_textures = 0,
+        num_storage_buffers  = 0,
+        num_uniform_buffers = 1,
+        props = {}
+    })
+    sky_frag := sdl.CreateGPUShader(device, {
+        code_size = len(sky_frag_spv) if use_spv else len(sky_frag_msl),
+        code = raw_data(sky_frag_spv) if use_spv else raw_data(sky_frag_msl),
+        entrypoint = "main",
+        format = { decided_format },
+        stage = .FRAGMENT,
+        num_samplers = 1,
+        num_storage_textures = 0,
+        num_storage_buffers  = 0,
+        num_uniform_buffers = 0,
+        props = {}
+    })
+    tonemap_frag := sdl.CreateGPUShader(device, {
+        code_size = len(tonemap_frag_spv) if use_spv else len(tonemap_frag_msl),
+        code = raw_data(tonemap_frag_spv) if use_spv else raw_data(tonemap_frag_msl),
+        entrypoint = "main",
+        format = { decided_format },
+        stage = .FRAGMENT,
+        num_samplers = 1,
+        num_storage_textures = 0,
+        num_storage_buffers  = 0,
+        num_uniform_buffers = 0,
+        props = {}
+    })
     defer
     {
         sdl.ReleaseGPUShader(device, lit_frag)
-        sdl.ReleaseGPUShader(device, depth_only_vert)
-        sdl.ReleaseGPUShader(device, depth_only_frag)
         sdl.ReleaseGPUShader(device, model_to_proj_vert)
         sdl.ReleaseGPUShader(device, fullscreen_quad_vert)
         sdl.ReleaseGPUShader(device, sample_tex_frag)
+        sdl.ReleaseGPUShader(device, sky_vert)
+        sdl.ReleaseGPUShader(device, sky_frag)
+        sdl.ReleaseGPUShader(device, tonemap_frag)
     }
 
     // Vertex layout
@@ -718,7 +906,8 @@ make_pipelines :: proc(device: ^sdl.GPUDevice) -> Pipelines
     }
 
     // Pipelines
-    target_format := sdl.GPUTextureFormat.B8G8R8A8_UNORM
+    target_format := LIGHTMAP_FORMAT
+    swapchain_format := sdl.GetGPUSwapchainTextureFormat(device, window)
 
     pipelines: Pipelines
     using pipelines
@@ -759,13 +948,13 @@ make_pipelines :: proc(device: ^sdl.GPUDevice) -> Pipelines
             has_depth_stencil_target = true,
             depth_stencil_format = get_depth_format(device),
         },
-        vertex_input_state = static_mesh_layout,
+        // vertex_input_state = static_mesh_layout,
         primitive_type = .TRIANGLELIST,
         rasterizer_state = {
             fill_mode = .FILL,
             cull_mode = .BACK,
             front_face = .COUNTER_CLOCKWISE,
-            enable_depth_clip = true,
+            enable_depth_clip = false,
         },
         multisample_state = {
             sample_count = ._1,
@@ -778,12 +967,54 @@ make_pipelines :: proc(device: ^sdl.GPUDevice) -> Pipelines
         vertex_shader = fullscreen_quad_vert,
         fragment_shader = sample_tex_frag,
     })
-
-    /*
-    depth_only = sdl.CreateGPUGraphicsPipeline(device, {
-
+    sky = sdl.CreateGPUGraphicsPipeline(device, {
+        target_info = sdl.GPUGraphicsPipelineTargetInfo {
+            num_color_targets = 1,
+            color_target_descriptions = raw_data([]sdl.GPUColorTargetDescription {
+                { format = target_format },
+            }),
+            has_depth_stencil_target = true,
+            depth_stencil_format = get_depth_format(device),
+        },
+        vertex_input_state = static_mesh_layout,
+        primitive_type = .TRIANGLELIST,
+        rasterizer_state = {
+            fill_mode = .FILL,
+            cull_mode = .FRONT,
+            front_face = .COUNTER_CLOCKWISE
+        },
+        multisample_state = {
+            sample_count = ._1,
+        },
+        depth_stencil_state = {
+            enable_depth_test = true,
+            enable_depth_write = true,
+            compare_op = .LESS_OR_EQUAL,
+        },
+        vertex_shader = sky_vert,
+        fragment_shader = sky_frag,
     })
-    */
+    tonemap = sdl.CreateGPUGraphicsPipeline(device, {
+        target_info = sdl.GPUGraphicsPipelineTargetInfo {
+            num_color_targets = 1,
+            color_target_descriptions = raw_data([]sdl.GPUColorTargetDescription {
+                { format = swapchain_format },
+            }),
+        },
+        //vertex_input_state = static_mesh_layout,
+        primitive_type = .TRIANGLELIST,
+        rasterizer_state = {
+            fill_mode = .FILL,
+            cull_mode = .BACK,
+            front_face = .COUNTER_CLOCKWISE,
+        },
+        multisample_state = {},
+        depth_stencil_state = {
+            enable_depth_test = false,
+        },
+        vertex_shader = fullscreen_quad_vert,
+        fragment_shader = tonemap_frag,
+    })
 
     return pipelines
 }
@@ -806,7 +1037,9 @@ get_depth_format :: proc(device: ^sdl.GPUDevice) -> sdl.GPUTextureFormat
 cleanup_pipelines :: proc(device: ^sdl.GPUDevice, pipelines: ^Pipelines)
 {
     sdl.ReleaseGPUGraphicsPipeline(device, pipelines.lit)
-    sdl.ReleaseGPUGraphicsPipeline(device, pipelines.depth_only)
+    sdl.ReleaseGPUGraphicsPipeline(device, pipelines.fullscreen_sample_tex)
+    sdl.ReleaseGPUGraphicsPipeline(device, pipelines.sky)
+    sdl.ReleaseGPUGraphicsPipeline(device, pipelines.tonemap)
 }
 
 MIN_WINDOW_SIZE: [2]i32 = { 100, 100 }
@@ -870,6 +1103,25 @@ handle_window_events :: proc(window: ^sdl.Window) -> (proceed: bool)
                 }
             }
         }
+        /*
+        case .MOUSE_BUTTON_DOWN, .MOUSE_BUTTON_UP:
+        {
+            event := event.button
+            action: proc(^Button_State)
+            if event.type == .MOUSE_BUTTON_DOWN {
+                action = press
+            } else {
+                action = release
+            }
+            if event.button == sdl.BUTTON_RIGHT {
+                action(&input.rmouse)
+            } else if event.button == sdl.BUTTON_LEFT {
+                action(&input.lmouse)
+            } else if event.button == sdl.BUTTON_MIDDLE {
+                action(&input.mmouse)
+            }
+        }
+        */
     }
 
     return
@@ -922,7 +1174,7 @@ compute_world_to_view :: proc() -> matrix[4, 4]f32
         case .First_Person:         return first_person_camera_view()
     }
 
-    return {}
+    return 1
 }
 
 first_person_camera_view :: proc() -> matrix[4, 4]f32
@@ -931,7 +1183,7 @@ first_person_camera_view :: proc() -> matrix[4, 4]f32
     @(static) rot_x: f32
     @(static) rot_y: f32
 
-    return {}
+    return 1
 }
 
 rotating_camera_view :: proc() -> matrix[4, 4]f32
@@ -941,6 +1193,7 @@ rotating_camera_view :: proc() -> matrix[4, 4]f32
 
     rot := linalg.quaternion_angle_axis(rot_x, [3]f32 { 0, 1, 0 })
     pos := linalg.quaternion_mul_vector3(rot, [3]f32 { 0, 2.5, -10 })
+
     return world_to_view_mat(pos, rot)
 }
 

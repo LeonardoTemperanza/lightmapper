@@ -46,38 +46,45 @@ struct spvUnsafeArray
 
 struct type_Uniforms
 {
-    uint2 tex_offset;
+    uint2 input_size;
+    uint2 output_size;
 };
 
 kernel void main0(constant type_Uniforms& Uniforms [[buffer(0)]], texture2d<float> input_tex [[texture(0)]], texture2d<float> weight_tex [[texture(1)]], texture2d<float, access::write> output_tex [[texture(2)]], uint3 gl_WorkGroupID [[threadgroup_position_in_grid]], uint3 gl_LocalInvocationID [[thread_position_in_threadgroup]])
 {
     threadgroup spvUnsafeArray<float4, 64> shared_mem;
-    uint _53 = (gl_LocalInvocationID.y * 8u) + gl_LocalInvocationID.x;
-    uint2 _61 = Uniforms.tex_offset + (((gl_WorkGroupID.xy * uint2(8u)) + gl_LocalInvocationID.xy) * uint2(2u));
-    float4 _63 = input_tex.read(uint2(_61), 0u);
-    uint2 _64 = _61 + uint2(1u, 0u);
-    float4 _65 = input_tex.read(uint2(_64), 0u);
-    uint2 _66 = _61 + uint2(0u, 1u);
-    float4 _67 = input_tex.read(uint2(_66), 0u);
-    uint2 _68 = _61 + uint2(1u);
-    float4 _69 = input_tex.read(uint2(_68), 0u);
-    float4 _71 = weight_tex.read(uint2(_61), 0u);
-    float4 _72 = weight_tex.read(uint2(_64), 0u);
-    float4 _73 = weight_tex.read(uint2(_66), 0u);
-    float4 _74 = weight_tex.read(uint2(_68), 0u);
-    shared_mem[_53] = ((float4(_63.xyz * _71.x, _63.w * _71.y) + float4(_65.xyz * _72.x, _65.w * _72.y)) + float4(_67.xyz * _73.x, _67.w * _73.y)) + float4(_69.xyz * _74.x, _69.w * _74.y);
+    uint2 _57 = (Uniforms.input_size / Uniforms.output_size) * uint2(3u, 1u);
+    uint _63 = (gl_LocalInvocationID.y * 8u) + gl_LocalInvocationID.x;
+    uint2 _68 = (_57 * gl_WorkGroupID.xy) + (gl_LocalInvocationID.xy * uint2(3u, 1u));
+    uint2 _69 = _68 % uint2(weight_tex.get_width(), weight_tex.get_height());
+    float4 _117;
+    if (all(gl_LocalInvocationID.xy < _57))
+    {
+        float4 _75 = input_tex.read(uint2(_68), 0u);
+        float4 _77 = input_tex.read(uint2((_68 + uint2(1u, 0u))), 0u);
+        float4 _79 = input_tex.read(uint2((_68 + uint2(2u, 0u))), 0u);
+        float4 _80 = weight_tex.read(uint2(_69), 0u);
+        float4 _82 = weight_tex.read(uint2((_69 + uint2(1u, 0u))), 0u);
+        float4 _84 = weight_tex.read(uint2((_69 + uint2(2u, 0u))), 0u);
+        _117 = (float4(_75.xyz * _80.x, _75.w * _80.y) + float4(_77.xyz * _82.x, _77.w * _82.y)) + float4(_79.xyz * _84.x, _79.w * _84.y);
+    }
+    else
+    {
+        _117 = float4(0.0);
+    }
+    shared_mem[_63] = _117;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint _120 = 32u; _120 > 0u; _120 = _120 >> 1u)
     {
-        if (_53 < _120)
+        if (_63 < _120)
         {
-            shared_mem[_53] += shared_mem[_53 + _120];
+            shared_mem[_63] += shared_mem[_63 + _120];
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
-    if (_53 == 0u)
+    if (_63 == 0u)
     {
-        output_tex.write(shared_mem[0], uint2((Uniforms.tex_offset + gl_WorkGroupID.xy)));
+        output_tex.write(shared_mem[0], uint2(gl_WorkGroupID.xy));
     }
 }
 

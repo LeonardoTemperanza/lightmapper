@@ -1,0 +1,23 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct main0_out
+{
+    float4 out_var_SV_TARGET [[color(0)]];
+};
+
+struct main0_in
+{
+    float3 in_var_TEXCOORD0 [[user(locn0)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], texture2d<float> sky_tex [[texture(0)]], sampler sky_sampler [[sampler(0)]])
+{
+    main0_out out = {};
+    float3 _26 = fast::normalize(in.in_var_TEXCOORD0);
+    out.out_var_SV_TARGET = float4(sky_tex.sample(sky_sampler, float2((precise::atan2(_26.x, _26.z) + 3.1415927410125732421875) * 0.15915493667125701904296875, acos(_26.y) * 0.3183098733425140380859375)).xyz, 1.0);
+    return out;
+}
+
