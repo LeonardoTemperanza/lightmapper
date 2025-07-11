@@ -96,6 +96,7 @@ main :: proc()
         num_levels = 1,
         usage = { .SAMPLER, .COLOR_TARGET },
     })
+    defer sdl.ReleaseGPUTexture(device, lightmap)
 
     // Specify your buffer formats.
     mesh_info := lm.Mesh {
@@ -311,7 +312,7 @@ view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.G
     }
 }
 
-render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Params, lm_tex: ^sdl.GPUTexture, lm_sampler: ^sdl.GPUSampler, pipelines: Pipelines, mesh: Mesh_GPU, skysphere: Mesh_GPU, sky_tex: ^sdl.GPUTexture)
+render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Params, lm_tex: ^sdl.GPUTexture, sampler: ^sdl.GPUSampler, pipelines: Pipelines, mesh: Mesh_GPU, skysphere: Mesh_GPU, sky_tex: ^sdl.GPUTexture)
 {
     assert(params.pass != nil)
 
@@ -351,7 +352,7 @@ render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Par
 
         lm_tex_binding := sdl.GPUTextureSamplerBinding {
             texture = lm_tex,
-            sampler = lm_sampler,
+            sampler = sampler,
         }
         sdl.BindGPUFragmentSamplers(params.pass, 0, &lm_tex_binding, 1)
 
@@ -364,11 +365,9 @@ render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Par
             offset = 0
         }
 
-        // TODO TODO Change lm_sampler
-
         tex_binding := sdl.GPUTextureSamplerBinding {
             texture = lm_tex,
-            sampler = lm_sampler,
+            sampler = sampler,
         }
         sdl.BindGPUFragmentSamplers(params.pass, 0, &tex_binding, 1)
 
@@ -409,7 +408,7 @@ render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Par
 
         lm_tex_binding := sdl.GPUTextureSamplerBinding {
             texture = sky_tex,
-            sampler = lm_sampler,
+            sampler = sampler,
         }
         sdl.BindGPUFragmentSamplers(params.pass, 0, &lm_tex_binding, 1)
 

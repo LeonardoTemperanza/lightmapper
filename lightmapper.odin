@@ -223,6 +223,10 @@ bake_begin :: proc(using ctx: ^Context, size: [2]u32, format: sdl.GPUTextureForm
     lightmap_size = size
     lightmap_format = format
 
+    if cmd_buf == nil {
+        cmd_buf = sdl.AcquireGPUCommandBuffer(device)
+    }
+
     // Create textures
     final_usages := sdl.GPUTextureUsageFlags { .SAMPLER }
     ensure(sdl.GPUTextureSupportsFormat(device, lightmap_format, .D2, final_usages))
@@ -330,9 +334,19 @@ bake_end :: proc(using ctx: ^Context, blit_to: ^sdl.GPUTexture)
 
     fence_new := sdl.SubmitGPUCommandBufferAndAcquireFence(cmd_buf)
     assert(fence_new != nil)
-    ok := sdl.WaitForGPUFences(device, true, &fence, 1)
+    if fence != nil
+    {
+        ok := sdl.WaitForGPUFences(device, true, &fence, 1)
+        assert(ok)
+        sdl.ReleaseGPUFence(device, fence)
+        fence = nil
+    }
+    ok := sdl.WaitForGPUFences(device, true, &fence_new, 1)
     assert(ok)
-    cmd_buf = sdl.AcquireGPUCommandBuffer(device)
+    sdl.ReleaseGPUFence(device, fence_new)
+    fence_new = nil
+
+    cmd_buf = nil
 
     // Destroy resources.
     sdl.ReleaseGPUTexture(device, samples_storage.final_result_texture)
@@ -1549,6 +1563,10 @@ read_back_samples_texture :: proc(using ctx: ^Context)
     ok := sdl.WaitForGPUFences(device, true, raw_data(wait_on), auto_cast len(wait_on))
     assert(ok)
     cmd_buf = sdl.AcquireGPUCommandBuffer(device)
+    sdl.ReleaseGPUFence(device, fence)
+    fence = nil
+    sdl.ReleaseGPUFence(device, fence_new)
+    fence_new = nil
 
     mapped := sdl.MapGPUTransferBuffer(device, samples_storage.transfer, false)
     mapped_typed := cast([^][4]f32)mapped
@@ -1585,7 +1603,7 @@ submit_and_recreate_cmd_buf :: proc(using ctx: ^Context)
         ok := sdl.WaitForGPUFences(device, true, &fence, 1)
         assert(ok)
         sdl.ReleaseGPUFence(device, fence)
-
+        fence = nil
     }
     fence = fence_new
     cmd_buf = sdl.AcquireGPUCommandBuffer(device)
