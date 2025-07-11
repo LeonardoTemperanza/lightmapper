@@ -901,12 +901,14 @@ compute_current_camera :: proc(using ctx: ^Context) -> (viewport_offset: [2]u32,
         }
         case 3:  // Down
         {
+            // TODO: Mhmmm... "dir" is flipped here. Why does this work?
             world_to_view, view_to_proj = compute_matrices(pos, -up, -dir, -zn, zn, 0, zn, zn, zf)
             viewport_offset = { x + size + size, y }
             viewport_size   = { size, size / 2.0 }
         }
         case 4:  // Up
         {
+            // TODO: Mhmmm... "dir" is flipped here. Why does this work?
             world_to_view, view_to_proj = compute_matrices(pos, up, dir, -zn, zn, -zn, 0, zn, zf)
             viewport_offset = { x + size + size, y + size / 2 }
             viewport_size   = { size, size / 2.0 }

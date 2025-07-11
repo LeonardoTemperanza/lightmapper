@@ -133,7 +133,7 @@ main :: proc()
         fmt.println("Started to bake lightmap...")
         bake_begin_ts := sdl.GetPerformanceCounter()
 
-        NUM_BOUNCES :: 5  // 1 for ambient occlusion only, 2 or more for global illumination.
+        NUM_BOUNCES :: 2  // 1 for ambient occlusion only, 2 or more for global illumination.
         for bounce in 0..<NUM_BOUNCES
         {
             lm.bake_begin(lm_ctx, LIGHTMAP_SIZE, LIGHTMAP_FORMAT)
@@ -152,13 +152,14 @@ main :: proc()
                 @(static) print_counter := 0
                 if print_counter > 20000
                 {
-                    fmt.printfln("Bounce %v, progress: %v", bounce, lm.bake_progress(lm_ctx))
+                    fmt.printf("Bounce %v, progress: %.6f%%        \r", bounce, lm.bake_progress(lm_ctx))
                     print_counter = 0
                 }
                 print_counter += 1
             }
 
-            fmt.printfln("Bounce %v, progress: %v", bounce, lm.bake_progress(lm_ctx))
+            fmt.printf("Bounce %v, progress: %.6f%%        \r", bounce, lm.bake_progress(lm_ctx))
+            fmt.println("")
 
             // Post-process the lightmap as you wish.
             for i in 0..<16
