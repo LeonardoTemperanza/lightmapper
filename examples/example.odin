@@ -133,7 +133,7 @@ main :: proc()
         fmt.println("Started to bake lightmap...")
         bake_begin_ts := sdl.GetPerformanceCounter()
 
-        NUM_BOUNCES :: 2  // 1 for ambient occlusion only, 2 or more for global illumination.
+        NUM_BOUNCES :: 5  // 1 for ambient occlusion only, 2 or more for global illumination.
         for bounce in 0..<NUM_BOUNCES
         {
             lm.bake_begin(lm_ctx, LIGHTMAP_SIZE, LIGHTMAP_FORMAT)
@@ -190,7 +190,7 @@ main :: proc()
 view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.GPUTexture, pipelines: Pipelines, mesh: Mesh_GPU, skysphere: Mesh_GPU, sky_tex: ^sdl.GPUTexture)
 {
     fmt.println("A view of the result will be shown.")
-    fmt.println("To look around using first person camera controls, press Space. (Press Space again to go back)")
+    fmt.println("To look around using first person camera controls, press Space. (Press Space again to switch back)")
 
     defer cleanup_screen_resources(device)
 
@@ -206,6 +206,9 @@ view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.G
     defer sdl.ReleaseGPUSampler(device, linear_sampler)
 
     window_size: [2]i32
+    max_delta_time: f32 = 1.0 / 10.0  // 10fps
+    now_ts := sdl.GetPerformanceCounter()
+    ts_freq := sdl.GetPerformanceFrequency()
     for
     {
         proceed := handle_window_events(window)
@@ -230,13 +233,16 @@ view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.G
             continue
         }
 
+        // Compute delta time
+        last_ts := now_ts
+        now_ts = sdl.GetPerformanceCounter()
+        DELTA_TIME = min(max_delta_time, f32(f64((now_ts - last_ts)*1000) / f64(ts_freq)) / 1000.0)
+
         old_size  := window_size
         sdl.GetWindowSize(window, &window_size.x, &window_size.y)
         if old_size != window_size {
             rebuild_screen_resources(device, window_size)
         }
-
-        world_to_view := compute_world_to_view()
 
         // Main pass
         {
@@ -316,6 +322,15 @@ view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.G
 render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Params, lm_tex: ^sdl.GPUTexture, sampler: ^sdl.GPUSampler, pipelines: Pipelines, mesh: Mesh_GPU, skysphere: Mesh_GPU, sky_tex: ^sdl.GPUTexture)
 {
     assert(params.pass != nil)
+
+    // NOTE: There is a "depth_only" member in Scene_Render_Params.
+    // In this demo we don't use it for terseness but keep in mind
+    // that to reduce baking time a depth-only pass could be used
+    // since the lightmap would be black anyway.
+    // (This is not true for environment map and any other emissive surface,
+    // which are required to be used even if "depth_only" were to be true).
+    // There is also a "render_shadowmap" member; if you have shadowmaps those
+    // can be rendered at this time (low-res should be fine here).
 
     sdl.SetGPUViewport(params.pass, {
         x = auto_cast params.viewport_offset.x,
@@ -1088,6 +1103,15 @@ quit_sdl :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice)
 
 handle_window_events :: proc(window: ^sdl.Window) -> (proceed: bool)
 {
+    // Reset "one-shot" inputs
+    for &key in INPUT.keys
+    {
+        key.pressed = false
+        key.released = false
+    }
+    INPUT.mouse_dx = 0
+    INPUT.mouse_dy = 0
+
     event: sdl.Event
     proceed = true
     for sdl.PollEvent(&event)
@@ -1102,26 +1126,43 @@ handle_window_events :: proc(window: ^sdl.Window) -> (proceed: bool)
                     proceed = false
                 }
             }
-        }
-        /*
-        case .MOUSE_BUTTON_DOWN, .MOUSE_BUTTON_UP:
-        {
-            event := event.button
-            action: proc(^Button_State)
-            if event.type == .MOUSE_BUTTON_DOWN {
-                action = press
-            } else {
-                action = release
+            // Input events
+            case .MOUSE_BUTTON_DOWN, .MOUSE_BUTTON_UP:
+            {
+                event := event.button
+                if event.type == .MOUSE_BUTTON_DOWN {
+                    if event.button == sdl.BUTTON_RIGHT {
+                        INPUT.pressing_right_click = true
+                    }
+                } else if event.type == .MOUSE_BUTTON_UP {
+                    if event.button == sdl.BUTTON_RIGHT {
+                        INPUT.pressing_right_click = false
+                    }
+                }
             }
-            if event.button == sdl.BUTTON_RIGHT {
-                action(&input.rmouse)
-            } else if event.button == sdl.BUTTON_LEFT {
-                action(&input.lmouse)
-            } else if event.button == sdl.BUTTON_MIDDLE {
-                action(&input.mmouse)
+            case .KEY_DOWN, .KEY_UP:
+            {
+                event := event.key
+                if event.repeat do break
+
+                if event.type == .KEY_DOWN
+                {
+                    INPUT.keys[event.scancode].pressed = true
+                    INPUT.keys[event.scancode].pressing = true
+                }
+                else
+                {
+                    INPUT.keys[event.scancode].pressing = false
+                    INPUT.keys[event.scancode].released = true
+                }
+            }
+            case .MOUSE_MOTION:
+            {
+                event := event.motion
+                INPUT.mouse_dx += event.xrel
+                INPUT.mouse_dy -= event.yrel  // In sdl, up is negative
             }
         }
-        */
     }
 
     return
@@ -1140,18 +1181,24 @@ is_window_valid :: proc(window: ^sdl.Window) -> bool
     return res
 }
 
+Key_State :: struct
+{
+    pressed: bool,
+    pressing: bool,
+    released: bool,
+}
+
 Input :: struct
 {
-    pressing_w: bool,
-    pressing_a: bool,
-    pressing_s: bool,
-    pressing_d: bool,
-    pressing_q: bool,
-    pressing_e: bool,
     pressing_right_click: bool,
+    keys: #sparse[sdl.Scancode]Key_State,
 
-    pressed_space: bool,
+    mouse_dx: f32,  // pixels/dpi (inches), right is positive
+    mouse_dy: f32,  // pixels/dpi (inches), up is positive
 }
+
+// A lot of these things are global because this is just an example,
+// so I don't want to clutter useful things with boilerplate code.
 
 INPUT: Input
 
@@ -1161,10 +1208,12 @@ Camera_Movement_Mode :: enum
     First_Person,
 }
 
+DELTA_TIME: f32
+
 compute_world_to_view :: proc() -> matrix[4, 4]f32
 {
     @(static) cam_mode := Camera_Movement_Mode.Rotate_Around_Origin
-    if INPUT.pressed_space {
+    if INPUT.keys[.SPACE].pressed {
         cam_mode = Camera_Movement_Mode((int(cam_mode) + 1) % len(Camera_Movement_Mode))
     }
 
@@ -1179,17 +1228,79 @@ compute_world_to_view :: proc() -> matrix[4, 4]f32
 
 first_person_camera_view :: proc() -> matrix[4, 4]f32
 {
-    @(static) pos: [3]f32
-    @(static) rot_x: f32
-    @(static) rot_y: f32
+    @(static) cam_pos: [3]f32 = { 0, 0, -10 }
 
-    return 1
+    @(static) angle: [2]f32
+
+    cam_rot: quaternion128 = 1
+
+    mouse_sensitivity := math.to_radians_f32(0.2)  // Radians per pixel
+    mouse: [2]f32
+    if INPUT.pressing_right_click
+    {
+        mouse.x = INPUT.mouse_dx * mouse_sensitivity
+        mouse.y = INPUT.mouse_dy * mouse_sensitivity
+    }
+
+    angle += mouse
+
+    // Wrap angle.x
+    for angle.x < 0 do angle.x += 2*math.PI
+    for angle.x > 2*math.PI do angle.x -= 2*math.PI
+
+    angle.y = clamp(angle.y, math.to_radians_f32(-90), math.to_radians_f32(90))
+    y_rot := linalg.quaternion_angle_axis(angle.y, [3]f32 { -1, 0, 0 })
+    x_rot := linalg.quaternion_angle_axis(angle.x, [3]f32 { 0, 1, 0 })
+    cam_rot = x_rot * y_rot
+
+    // Movement
+    @(static) cur_vel: [3]f32
+    move_speed: f32 : 6.0
+    move_speed_fast: f32 : 15.0
+    move_accel: f32 : 300.0
+
+    keyboard_dir_xz: [3]f32
+    keyboard_dir_y: f32
+    if INPUT.pressing_right_click
+    {
+        keyboard_dir_xz.x = f32(int(INPUT.keys[.D].pressing) - int(INPUT.keys[.A].pressing))
+        keyboard_dir_xz.z = f32(int(INPUT.keys[.W].pressing) - int(INPUT.keys[.S].pressing))
+        keyboard_dir_y    = f32(int(INPUT.keys[.E].pressing) - int(INPUT.keys[.Q].pressing))
+
+        // It's a "direction" input so its length
+        // should be no more than 1
+        if linalg.dot(keyboard_dir_xz, keyboard_dir_xz) > 1 {
+            keyboard_dir_xz = linalg.normalize(keyboard_dir_xz)
+        }
+
+        if abs(keyboard_dir_y) > 1 {
+            keyboard_dir_y = math.sign(keyboard_dir_y)
+        }
+    }
+
+    target_vel := keyboard_dir_xz * move_speed
+    target_vel = linalg.quaternion_mul_vector3(cam_rot, target_vel)
+    target_vel.y += keyboard_dir_y * move_speed
+
+    cur_vel = approach_linear(cur_vel, target_vel, move_accel * DELTA_TIME)
+    cam_pos += cur_vel * DELTA_TIME
+
+    return world_to_view_mat(cam_pos, cam_rot)
+
+    approach_linear :: proc(cur: [3]f32, target: [3]f32, delta: f32) -> [3]f32
+    {
+        diff := target - cur
+        dist := linalg.length(diff)
+
+        if dist <= delta do return target
+        return cur + diff / dist * delta
+    }
 }
 
 rotating_camera_view :: proc() -> matrix[4, 4]f32
 {
     @(static) rot_x: f32
-    rot_x = math.mod(rot_x + math.RAD_PER_DEG * 0.3, math.RAD_PER_DEG * 360)
+    rot_x = math.mod(rot_x + math.RAD_PER_DEG * 25 * DELTA_TIME, math.RAD_PER_DEG * 360)
 
     rot := linalg.quaternion_angle_axis(rot_x, [3]f32 { 0, 1, 0 })
     pos := linalg.quaternion_mul_vector3(rot, [3]f32 { 0, 2.5, -10 })
