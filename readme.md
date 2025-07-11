@@ -12,8 +12,8 @@ generated, and let your artist work on more enjoyable things. You could either w
 - [xatlas](https://github.com/jpcy/xatlas)
 - [uvatlas](https://github.com/microsoft/UVAtlas)
 
-Depending on the requirements of your application, you may need to compress these lightmaps. As you probably know, GPUs have special hardware for sampling compressed textures at runtime.
-One of these supported formats is BC6H, which was specifically designed for HDR textures.
+Depending on the requirements of your application, you may need to compress these lightmaps as well. As you probably know, GPUs have special hardware for sampling compressed textures at runtime.
+One of the well-supported formats is BC6H, which was specifically designed for HDR textures (and lightmaps are usually HDR).
 To compress to BC6H you can use one of the following tools:
 - [GPURealTimeBC6H](https://github.com/knarkowicz/GPURealTimeBC6H.git)
 - [DirectXTex](https://github.com/microsoft/DirectXTex.git)
@@ -22,6 +22,8 @@ This library uses the hemicube approach, which is a somewhat old-school method f
 and integration into an existing renderer makes it still a very good choice for many applications.
 
 ## Library Usage
+To use **lightmapper_odin**, simply paste this folder into your project's source folder. Here is an example which doesn't compile on its own, but succintly illustrates how to use this library.
+
 ```odin
 import lm "lightmapper"
 
@@ -49,23 +51,45 @@ main :: proc()
                       // > 0 -> improves gradients on surfaces with interpolated normals due to the flat
                       // surface horizon, but may introduce other artifacts.
                       camera_to_surface_distance_modifier = 0.0)
-    defer lm.destroy(lm_ctx)
+    defer lm.destroy(&lm_ctx)
 
-    lightmap := lm.make_lightmap(lm_ctx, { tex_size = { 1024, 1024 }, format = .BC6H_RGB_FLOAT } )
+    mesh_info := lm.Mesh { /* Feed info about your buffers, OpenGL-style. */ }
+
+    // This is only a convenience function for creating
+    // a lightmap texture with default parameters.
+    lightmap := lm.make_lightmap(device, /* lightmap size */, /* lightmap format */)
+    defer lm.destroy_lightmap(device, lightmap)
+
     NUM_BOUNCES :: 1  // 1 one for ambient occlusion only, 2 or more for global illumination.
     for bounce in 0..<NUM_BOUNCES
     {
-        mesh_info := lm.Mesh { /* Feed info about your buffers, OpenGL-style. */ }
-        lm.set_mesh(lm_ctx, mesh_info)
-        lm.set_target_lightmap(lm_ctx, lightmap)
+        lm.bake_begin(&lm_ctx, /* lightmap size */, /* lightmap format */)
 
-        for render_params in lm.bake_iterate_begin(lm_ctx)
+        lm.set_current_mesh(&lm_ctx, mesh_info, /* your model_to_world matrix (left-handed coordinates) */)
+
+        for render_params in lm.bake_iterate_begin(&lm_ctx)
         {
-            defer lm.bake_iterate_end(lm_ctx)
+            defer lm.bake_iterate_end(&lm_ctx)
 
             // Render your scene using the render_params supplied by lm.bake_iterate_begin
-            render_scene()
+            render_scene(render_params)
+
+            // For loading bar progress:
+            progress := lm.bake_progress(&lm_ctx)
         }
+
+        // Postprocessing. lm.postprocess_dilate is very important
+        // because it removes invalid pixels (and instead uses an average
+        // of the surrounding valid pixels)
+        for i in 0..<16
+        {
+            lm.postprocess_dilate(lm_ctx)
+            lm.postprocess_dilate(lm_ctx)
+        }
+        lm.postprocess_box_blur(lm_ctx)
+        lm.postprocess_dilate(lm_ctx)
+
+        lm.bake_end(&lm_ctx, lightmap)
     }
 
     // Deinitialization...
@@ -76,5 +100,19 @@ A full demo is available in the ```examples``` directory. To run it, simply run 
 ```bat
 odin run examples/example.odin -file
 ```
+(You'll need SDL3 .DLLs, which you can find [here](https://github.com/mmozeiko/build-sdl3) for Windows.)
 
-Thanks to [ands](https://github.com/ands) for his great lightmapping library.
+## Showcase
+Ambient Occlusion: (1 iteration, constant environment light)
+![ambient occlusion image](readme_images/ambient_occlusion.PNG)
+
+Global Illumination: (5 iterations, with environment map)
+![global illumination image](readme_images/global_illumination.PNG)
+
+## Credits
+Thanks to:
+- [ands](https://github.com/ands) for his great lightmapping library, which I used as a reference implementation. I also used
+  the lightmap UVs they had generated for the gazebo model.
+- Ignacio Castaño and Jonathan Blow for their informative blogs, which helped me understand the theory behind this approach.
+- Teh_Bucket for their [gazebo model](https://opengameart.org/content/gazebo-0).
+- Grzegorz Wronkowski for their [HDRI](https://polyhaven.com/a/charolettenbrunn_park).

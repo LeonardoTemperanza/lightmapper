@@ -144,13 +144,13 @@ main :: proc()
                 @(static) print_counter := 0
                 if print_counter > 20000
                 {
-                    fmt.printf("Bounce %v, progress: %.6f%%        \r", bounce, lm.bake_progress(lm_ctx))
+                    fmt.printf("Bounce %v, progress: %.6f%% \r", bounce, lm.bake_progress(lm_ctx))
                     print_counter = 0
                 }
                 print_counter += 1
             }
 
-            fmt.printf("Bounce %v, progress: %.6f%%        \r", bounce, lm.bake_progress(lm_ctx))
+            fmt.printf("Bounce %v, progress: %.6f%% \r", bounce, lm.bake_progress(lm_ctx))
             fmt.println("")
 
             // Post-process the lightmap as you wish.
@@ -1220,7 +1220,7 @@ compute_world_to_view :: proc() -> matrix[4, 4]f32
 
 first_person_camera_view :: proc() -> matrix[4, 4]f32
 {
-    @(static) cam_pos: [3]f32 = { 0, 0, -10 }
+    @(static) cam_pos: [3]f32 = { 0, 2.5, -10 }
 
     @(static) angle: [2]f32
 
