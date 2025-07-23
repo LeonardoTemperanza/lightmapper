@@ -21,6 +21,13 @@ To compress to BC6H you can use one of the following tools:
 This library uses the hemicube approach, which is a somewhat old-school method for baking lightmaps, and although it is quite slow for big scenes, I think its ease of use
 and integration into an existing renderer makes it still a very good choice for many applications.
 
+## Showcase
+Ambient Occlusion: (1 iteration, constant environment light)
+![ambient occlusion image](readme_images/ambient_occlusion.PNG)
+
+Global Illumination: (5 iterations, with environment map)
+![global illumination image](readme_images/global_illumination.PNG)
+
 ## Library Usage
 To use **lightmapper_odin**, simply paste this folder into your project's source folder. Here is an example which doesn't compile on its own, but succintly illustrates how to use this library.
 
@@ -101,13 +108,6 @@ A full demo is available in the ```examples``` directory. To run it, simply run 
 odin run examples/example.odin -file
 ```
 (You'll need SDL3 .DLLs, which you can find [here](https://github.com/mmozeiko/build-sdl3) for Windows.)
-
-## Showcase
-Ambient Occlusion: (1 iteration, constant environment light)
-![ambient occlusion image](readme_images/ambient_occlusion.PNG)
-
-Global Illumination: (5 iterations, with environment map)
-![global illumination image](readme_images/global_illumination.PNG)
 
 ## Credits
 Thanks to:
