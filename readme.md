@@ -111,7 +111,7 @@ Global Illumination: (5 iterations, with environment map)
 
 ## Credits
 Thanks to:
-- [ands](https://github.com/ands) for his great lightmapping library, which I used as a reference implementation. I also used
+- [ands](https://github.com/ands) for their great lightmapping library, which I used as a reference implementation. I also used
   the lightmap UVs they had generated for the gazebo model.
 - Ignacio Castaño and Jonathan Blow for their informative blogs, which helped me understand the theory behind this approach.
 - Teh_Bucket for their [gazebo model](https://opengameart.org/content/gazebo-0).

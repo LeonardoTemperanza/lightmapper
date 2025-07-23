@@ -1,11 +1,11 @@
 
-static const float exposure = -1.0f;
+static const float exposure = 0.0f;
 
 float3 linear_to_srgb(float3 color)
 {
-    bool3 cutoff = color.rgb < (float3)0.0031308;
-    float3 higher = (float3)1.055 * pow(color.rgb, (float3)(1.0/2.4)) - (float3)0.055;
-    float3 lower = color.rgb * (float3)12.92;
+    bool3 cutoff = color.rgb <= (float3)0.0031308f;
+    float3 higher = (float3)1.055f * pow(color, (float3)(1.0/2.4)) - (float3)0.055;
+    float3 lower = color.rgb * (float3)12.92f;
 
     return lerp(higher, lower, cutoff);
 }
@@ -53,5 +53,5 @@ SamplerState tex_sampler : register(s0, space2);
 
 float4 main(float4 clip_pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
 {
-    return float4(hdr_to_ldr(linear_to_srgb(tex.Sample(tex_sampler, uv).rgb)), 1.0f);
+    return float4(hdr_to_ldr(tex.Sample(tex_sampler, uv).rgb), 1.0f);
 }
