@@ -144,13 +144,13 @@ main :: proc()
                 @(static) print_counter := 0
                 if print_counter > 20000
                 {
-                    fmt.printf("Bounce %v, progress: %.6f%% \r", bounce, lm.bake_progress(lm_ctx) * 100.0)
+                    fmt.printf("Bounce %v, progress: %.6f%% \r", bounce, lm.bake_progress(lm_ctx))
                     print_counter = 0
                 }
                 print_counter += 1
             }
 
-            fmt.printf("Bounce %v, progress: %.6f%% \r", bounce, lm.bake_progress(lm_ctx) * 100.0)
+            fmt.printf("Bounce %v, progress: %.6f%% \r", bounce, lm.bake_progress(lm_ctx))
             fmt.println("")
 
             // Post-process the lightmap as you wish.
@@ -169,147 +169,14 @@ main :: proc()
         elapsed := f32(f64((bake_end_ts - bake_begin_ts)*1000) / f64(ts_freq)) / 1000.0
 
         when ODIN_DEBUG {
-            fmt.printfln("Done with lightmap baking! (%.6fs, %.6fs per bounce) (DEBUG BUILD)", elapsed, elapsed / NUM_BOUNCES)
-            fmt.println("Keep in mind debug builds affect GPU performance in this case, because it enables validation.")
+            fmt.printfln("Done with lightmap baking! (%.6fs) (DEBUG BUILD)", elapsed)
         } else {
-            fmt.printfln("Done with lightmap baking! (%.6fs, %.6fs per bounce)", elapsed, elapsed / NUM_BOUNCES)
+            fmt.printfln("Done with lightmap baking! (%.6fs)", elapsed)
         }
     }
 
     sdl.ShowWindow(window)
     view_results(window, device, lightmap, pipelines, mesh, skysphere, sky_tex)
-}
-
-view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.GPUTexture, pipelines: Pipelines, mesh: Mesh_GPU, skysphere: Mesh_GPU, sky_tex: ^sdl.GPUTexture)
-{
-    fmt.println("A view of the result will be shown.")
-    fmt.println("To look around using first person camera controls, press Space. (Press Space again to switch back)")
-
-    defer cleanup_screen_resources(device)
-
-    linear_sampler := sdl.CreateGPUSampler(device, {
-        min_filter = .LINEAR,
-        mag_filter = .LINEAR,
-        mipmap_mode = .LINEAR,
-        address_mode_u = .REPEAT,
-        address_mode_v = .REPEAT,
-        address_mode_w = .REPEAT,
-        max_lod = 1000,
-    })
-    defer sdl.ReleaseGPUSampler(device, linear_sampler)
-
-    window_size: [2]i32
-    max_delta_time: f32 = 1.0 / 10.0  // 10fps
-    now_ts := sdl.GetPerformanceCounter()
-    ts_freq := sdl.GetPerformanceFrequency()
-    for
-    {
-        proceed := handle_window_events(window)
-        if !proceed do break
-
-        if !is_window_valid(window)
-        {
-            sdl.Delay(16)  // Delay a bit.
-            continue
-        }
-
-        cmd_buf := sdl.AcquireGPUCommandBuffer(device)
-        swapchain: ^sdl.GPUTexture
-        ok := sdl.WaitAndAcquireGPUSwapchainTexture(cmd_buf, window, &swapchain, nil, nil)
-        ensure(ok)
-
-        // Sometimes the swapchain is NULL even though the function finished successfully (ok = true).
-        if swapchain == nil
-        {
-            sdl.Delay(16)  // Delay a bit.
-            ok := sdl.SubmitGPUCommandBuffer(cmd_buf)
-            continue
-        }
-
-        // Compute delta time
-        last_ts := now_ts
-        now_ts = sdl.GetPerformanceCounter()
-        DELTA_TIME = min(max_delta_time, f32(f64((now_ts - last_ts)*1000) / f64(ts_freq)) / 1000.0)
-
-        old_size  := window_size
-        sdl.GetWindowSize(window, &window_size.x, &window_size.y)
-        if old_size != window_size {
-            rebuild_screen_resources(device, window_size)
-        }
-
-        // Main pass
-        {
-            color_target := sdl.GPUColorTargetInfo {
-                texture = MAIN_TARGET_TEXTURE,
-                clear_color = { BACKGROUND_COLOR.x, BACKGROUND_COLOR.y, BACKGROUND_COLOR.z, 1.0 },
-                load_op = .CLEAR,
-                store_op = .STORE,
-            }
-            depth_target := sdl.GPUDepthStencilTargetInfo {
-                texture = MAIN_DEPTH_TEXTURE,
-                clear_depth = 1.0,
-                load_op = .CLEAR,
-                store_op = .STORE,
-                stencil_load_op = .DONT_CARE,
-                stencil_store_op = .DONT_CARE,
-            }
-
-            main_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target)
-            defer sdl.EndGPURenderPass(main_pass)
-
-            lightmap_screen_percent: f32 = 0.5
-            render_screen_percent := 1.0 - lightmap_screen_percent
-            render_screen_size := [2]f32 { auto_cast (f32(window_size.x) * render_screen_percent), auto_cast window_size.y }
-            lightmap_screen_size := [2]f32 { auto_cast (f32(window_size.x) * lightmap_screen_percent), auto_cast window_size.y } + 1.0
-
-            render_viewport_aspect_ratio := render_screen_size.x / render_screen_size.y
-
-            render_params := lm.Scene_Render_Params {
-                depth_only = false,
-                render_shadowmap = true,
-                viewport_offset = { 0, 0 },
-                viewport_size = { auto_cast render_screen_size.x, auto_cast render_screen_size.y },
-                world_to_view = compute_world_to_view(),
-                view_to_proj = linalg.matrix4_perspective_f32(math.RAD_PER_DEG * 59.0, render_viewport_aspect_ratio, 0.1, 1000.0, false),
-                pass = main_pass,
-            }
-            render_scene(cmd_buf, render_params, lm_tex, linear_sampler, pipelines, mesh, skysphere, sky_tex)
-            show_texture(cmd_buf, main_pass, lm_tex, linear_sampler, pipelines, { 1, 0 } * render_screen_size, lightmap_screen_size)
-        }
-
-        // Tonemap pass
-        {
-            color_target := sdl.GPUColorTargetInfo {
-                texture = swapchain,
-                clear_color = { 0.0, 0.0, 0.0, 1.0 },
-                load_op = .DONT_CARE,
-                store_op = .STORE,
-                cycle = false
-            }
-            pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, nil)
-            defer sdl.EndGPURenderPass(pass)
-
-            tex_binding := sdl.GPUTextureSamplerBinding {
-                texture = MAIN_TARGET_TEXTURE,
-                sampler = linear_sampler,
-            }
-            sdl.BindGPUFragmentSamplers(pass, 0, &tex_binding, 1)
-            sdl.BindGPUGraphicsPipeline(pass, pipelines.tonemap)
-            sdl.DrawGPUPrimitives(
-                pass,
-                num_vertices   = 6,
-                num_instances  = 1,
-                first_vertex   = 0,
-                first_instance = 0
-            )
-
-        }
-
-        ok = sdl.SubmitGPUCommandBuffer(cmd_buf)
-        ensure(ok)
-        ok = sdl.WaitForGPUSwapchain(device, window)
-        ensure(ok)
-    }
 }
 
 render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Params, lm_tex: ^sdl.GPUTexture, sampler: ^sdl.GPUSampler, pipelines: Pipelines, mesh: Mesh_GPU, skysphere: Mesh_GPU, sky_tex: ^sdl.GPUTexture)
@@ -432,42 +299,6 @@ render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Par
             first_instance = 0
         )
     }
-}
-
-show_texture :: proc(cmd_buf: ^sdl.GPUCommandBuffer, pass: ^sdl.GPURenderPass, texture: ^sdl.GPUTexture, sampler: ^sdl.GPUSampler, pipelines: Pipelines, viewport_offset: [2]f32, viewport_size: [2]f32)
-{
-    sdl.SetGPUViewport(pass, {
-        x = auto_cast viewport_offset.x,
-        y = auto_cast viewport_offset.y,
-        w = auto_cast viewport_size.x,
-        h = auto_cast viewport_size.y,
-        min_depth = 0.0,
-        max_depth = 1.0
-    })
-
-    sdl.SetGPUScissor(pass, {
-        x = auto_cast viewport_offset.x,
-        y = auto_cast viewport_offset.y,
-        w = auto_cast viewport_size.x,
-        h = auto_cast viewport_size.y,
-    })
-
-    // Render mesh
-    sdl.BindGPUGraphicsPipeline(pass, pipelines.fullscreen_sample_tex)
-
-    lm_tex_binding := sdl.GPUTextureSamplerBinding {
-        texture = texture,
-        sampler = sampler,
-    }
-    sdl.BindGPUFragmentSamplers(pass, 0, &lm_tex_binding, 1)
-
-    sdl.DrawGPUPrimitives(
-        pass,
-        num_vertices   = 6,
-        num_instances  = 1,
-        first_vertex   = 0,
-        first_instance = 0
-    )
 }
 
 Vertex :: struct
@@ -1066,7 +897,7 @@ init_sdl :: proc() -> (^sdl.Window, ^sdl.GPUDevice)
     window := sdl.CreateWindow("Lightmapper Example", 1700, 1024, window_flags)
     ensure(window != nil)
 
-    debug_mode := ODIN_DEBUG
+    debug_mode := false
     device := sdl.CreateGPUDevice({ .SPIRV, .MSL }, debug_mode, nil)
     ensure(device != nil)
 

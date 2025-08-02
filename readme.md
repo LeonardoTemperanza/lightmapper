@@ -105,7 +105,7 @@ main :: proc()
 
 A full demo is available in the ```examples``` directory. To run it, simply run the following command:
 ```bat
-odin run examples/example.odin -file
+odin run examples/example.odin -file -o:speed
 ```
 (You'll need SDL3 .DLLs, which you can find [here](https://github.com/mmozeiko/build-sdl3) for Windows.)
 
