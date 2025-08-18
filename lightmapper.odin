@@ -130,7 +130,6 @@ init :: proc(device: ^sdl.GPUDevice,
              background_color: [3]f32 = {},
              interpolation_passes: int = 4,                         // Hierarchical selective interpolation passes.
              interpolation_threshold: f32 = 0.01,                   // Error value below which lightmap pixels are interpolated instead of rendered.
-             log_stats: bool = false,
              camera_to_surface_distance_modifier: f32 = 0.0         // Modifier for the height of the rendered hemispheres above the surface.
                                                                     // -1 -> stick to surface, 0 -> minimum height for interpolated surface normals,
                                                                     // > 0 -> improves gradients on surfaces with interpolated normals due to the flat surface horizon,

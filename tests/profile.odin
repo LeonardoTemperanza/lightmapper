@@ -25,7 +25,6 @@ SOFTWARE.
 
 package main
 
-import "core:fmt"
 import intr "base:intrinsics"
 import "core:math"
 import "core:math/linalg"
@@ -120,13 +119,19 @@ main :: proc()
         use_indices = true,
     }
 
+    cmd_buf := sdl.AcquireGPUCommandBuffer(device)
+    swapchain: ^sdl.GPUTexture
+
+    // For profiling.
+    {
+        ok := sdl.WaitAndAcquireGPUSwapchainTexture(cmd_buf, window, &swapchain, nil, nil)
+        ensure(ok)
+    }
+
     // Build lightmap.
     {
-        fmt.println("Started to bake lightmap...")
         bake_begin_ts := sdl.GetPerformanceCounter()
 
-        NUM_BOUNCES :: 5  // 1 for ambient occlusion only, 2 or more for global illumination.
-        for bounce in 0..<NUM_BOUNCES
         {
             lm.bake_begin(lm_ctx, LIGHTMAP_SIZE, LIGHTMAP_FORMAT)
 
@@ -140,18 +145,7 @@ main :: proc()
                 cmd_buf := render_params.cmd_buf
 
                 render_scene(cmd_buf, render_params, lightmap, linear_sampler, pipelines, mesh, skysphere, sky_tex)
-
-                @(static) print_counter := 0
-                if print_counter > 20000
-                {
-                    fmt.printf("Bounce %v, progress: %.6f%% \r", bounce, lm.bake_progress(lm_ctx))
-                    print_counter = 0
-                }
-                print_counter += 1
             }
-
-            fmt.printf("Bounce %v, progress: %.6f%% \r", bounce, lm.bake_progress(lm_ctx))
-            fmt.println("")
 
             // Post-process the lightmap as you wish.
             for i in 0..<16
@@ -164,19 +158,15 @@ main :: proc()
 
             lm.bake_end(lm_ctx, lightmap)
         }
-
-        bake_end_ts := sdl.GetPerformanceCounter()
-        elapsed := f32(f64((bake_end_ts - bake_begin_ts)*1000) / f64(ts_freq)) / 1000.0
-
-        when ODIN_DEBUG {
-            fmt.printfln("Done with lightmap baking! (%.6fs) (DEBUG BUILD)", elapsed)
-        } else {
-            fmt.printfln("Done with lightmap baking! (%.6fs)", elapsed)
-        }
     }
 
-    sdl.ShowWindow(window)
-    view_results(window, device, lightmap, pipelines, mesh, skysphere, sky_tex)
+    // For profiling.
+    {
+        ok := sdl.SubmitGPUCommandBuffer(cmd_buf)
+        ensure(ok)
+        ok = sdl.WaitForGPUSwapchain(device, window)
+        ensure(ok)
+    }
 }
 
 render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Params, lm_tex: ^sdl.GPUTexture, sampler: ^sdl.GPUSampler, pipelines: Pipelines, mesh: Mesh_GPU, skysphere: Mesh_GPU, sky_tex: ^sdl.GPUTexture)
@@ -308,8 +298,8 @@ Vertex :: struct
     lm_uv: [2]f32,
 }
 
-MESH_VERTS   := #load("resources/mesh_verts", []Vertex)
-MESH_INDICES := #load("resources/mesh_indices", []u32)
+MESH_VERTS   := #load("../examples/resources/mesh_verts", []Vertex)
+MESH_INDICES := #load("../examples/resources/mesh_indices", []u32)
 
 Mesh_GPU :: struct
 {
@@ -455,9 +445,9 @@ cleanup_mesh :: proc(device: ^sdl.GPUDevice, mesh: ^Mesh_GPU)
     mesh^ = {}
 }
 
-SKYSPHERE_VERTS   := #load("resources/skysphere_verts", []Vertex)
-SKYSPHERE_INDICES := #load("resources/skysphere_indices", []u32)
-SKY_TEXTURE := #load("resources/sky.hdr")
+SKYSPHERE_VERTS   := #load("../examples/resources/skysphere_verts", []Vertex)
+SKYSPHERE_INDICES := #load("../examples/resources/skysphere_indices", []u32)
+SKY_TEXTURE := #load("../examples/resources/sky.hdr")
 
 upload_sky_resources :: proc(device: ^sdl.GPUDevice) -> (Mesh_GPU, ^sdl.GPUTexture)
 {
@@ -543,10 +533,10 @@ cleanup_sky_resources :: proc(device: ^sdl.GPUDevice, mesh: ^Mesh_GPU, tex: ^^sd
     tex^ = nil
 }
 
-hemi_reduce_spv          :: #load("resources/hemisphere_reduce.comp.spv")
-hemi_weighted_reduce_spv :: #load("resources/hemisphere_weighted_reduce.comp.spv")
-hemi_reduce_msl          :: #load("resources/hemisphere_reduce.comp.msl")
-hemi_weighted_reduce_msl :: #load("resources/hemisphere_weighted_reduce.comp.msl")
+hemi_reduce_spv          :: #load("../examples/resources/hemisphere_reduce.comp.spv")
+hemi_weighted_reduce_spv :: #load("../examples/resources/hemisphere_weighted_reduce.comp.spv")
+hemi_reduce_msl          :: #load("../examples/resources/hemisphere_reduce.comp.msl")
+hemi_weighted_reduce_msl :: #load("../examples/resources/hemisphere_weighted_reduce.comp.msl")
 
 make_lm_shaders :: proc(device: ^sdl.GPUDevice) -> lm.Shaders
 {
@@ -591,20 +581,20 @@ make_lm_shaders :: proc(device: ^sdl.GPUDevice) -> lm.Shaders
 }
 
 // User shaders (specific to this example and not part of the library)
-lit_frag_spv             := #load("resources/lit.frag.spv")
-model_to_proj_vert_spv   := #load("resources/model_to_proj.vert.spv")
-fullscreen_quad_vert_spv := #load("resources/fullscreen_quad.vert.spv")
-sample_tex_frag_spv      := #load("resources/sample_tex.frag.spv")
-sky_vert_spv             := #load("resources/sky.vert.spv")
-sky_frag_spv             := #load("resources/sky.frag.spv")
-tonemap_frag_spv         := #load("resources/tonemap.frag.spv")
-lit_frag_msl             := #load("resources/lit.frag.msl")
-model_to_proj_vert_msl   := #load("resources/model_to_proj.vert.msl")
-fullscreen_quad_vert_msl := #load("resources/fullscreen_quad.vert.msl")
-sample_tex_frag_msl      := #load("resources/sample_tex.frag.msl")
-sky_vert_msl             := #load("resources/sky.vert.msl")
-sky_frag_msl             := #load("resources/sky.frag.msl")
-tonemap_frag_msl         := #load("resources/tonemap.frag.msl")
+lit_frag_spv             := #load("../examples/resources/lit.frag.spv")
+model_to_proj_vert_spv   := #load("../examples/resources/model_to_proj.vert.spv")
+fullscreen_quad_vert_spv := #load("../examples/resources/fullscreen_quad.vert.spv")
+sample_tex_frag_spv      := #load("../examples/resources/sample_tex.frag.spv")
+sky_vert_spv             := #load("../examples/resources/sky.vert.spv")
+sky_frag_spv             := #load("../examples/resources/sky.frag.spv")
+tonemap_frag_spv         := #load("../examples/resources/tonemap.frag.spv")
+lit_frag_msl             := #load("../examples/resources/lit.frag.msl")
+model_to_proj_vert_msl   := #load("../examples/resources/model_to_proj.vert.msl")
+fullscreen_quad_vert_msl := #load("../examples/resources/fullscreen_quad.vert.msl")
+sample_tex_frag_msl      := #load("../examples/resources/sample_tex.frag.msl")
+sky_vert_msl             := #load("../examples/resources/sky.vert.msl")
+sky_frag_msl             := #load("../examples/resources/sky.frag.msl")
+tonemap_frag_msl         := #load("../examples/resources/tonemap.frag.msl")
 
 make_pipelines :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Pipelines
 {
@@ -898,7 +888,8 @@ init_sdl :: proc() -> (^sdl.Window, ^sdl.GPUDevice)
     ensure(window != nil)
 
     debug_mode := false
-    device := sdl.CreateGPUDevice({ .SPIRV, .MSL }, debug_mode, nil)
+    driver: cstring = nil
+    device := sdl.CreateGPUDevice({ .SPIRV, .MSL }, debug_mode, driver)
     ensure(device != nil)
 
     sdl.SetWindowMinimumSize(window, MIN_WINDOW_SIZE.x, MIN_WINDOW_SIZE.y)
@@ -923,219 +914,4 @@ quit_sdl :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice)
     sdl.DestroyGPUDevice(device)
     sdl.DestroyWindow(window)
     sdl.Quit()
-}
-
-handle_window_events :: proc(window: ^sdl.Window) -> (proceed: bool)
-{
-    // Reset "one-shot" inputs
-    for &key in INPUT.keys
-    {
-        key.pressed = false
-        key.released = false
-    }
-    INPUT.mouse_dx = 0
-    INPUT.mouse_dy = 0
-
-    event: sdl.Event
-    proceed = true
-    for sdl.PollEvent(&event)
-    {
-        #partial switch event.type
-        {
-            case .QUIT:
-                proceed = false
-            case .WINDOW_CLOSE_REQUESTED:
-            {
-                if event.window.windowID == sdl.GetWindowID(window) {
-                    proceed = false
-                }
-            }
-            // Input events
-            case .MOUSE_BUTTON_DOWN, .MOUSE_BUTTON_UP:
-            {
-                event := event.button
-                if event.type == .MOUSE_BUTTON_DOWN {
-                    if event.button == sdl.BUTTON_RIGHT {
-                        INPUT.pressing_right_click = true
-                    }
-                } else if event.type == .MOUSE_BUTTON_UP {
-                    if event.button == sdl.BUTTON_RIGHT {
-                        INPUT.pressing_right_click = false
-                    }
-                }
-            }
-            case .KEY_DOWN, .KEY_UP:
-            {
-                event := event.key
-                if event.repeat do break
-
-                if event.type == .KEY_DOWN
-                {
-                    INPUT.keys[event.scancode].pressed = true
-                    INPUT.keys[event.scancode].pressing = true
-                }
-                else
-                {
-                    INPUT.keys[event.scancode].pressing = false
-                    INPUT.keys[event.scancode].released = true
-                }
-            }
-            case .MOUSE_MOTION:
-            {
-                event := event.motion
-                INPUT.mouse_dx += event.xrel
-                INPUT.mouse_dy -= event.yrel  // In sdl, up is negative
-            }
-        }
-    }
-
-    return
-}
-
-is_window_valid :: proc(window: ^sdl.Window) -> bool
-{
-    w, h: i32
-    sdl.GetWindowSize(window, &w, &h)
-    window_flags := sdl.GetWindowFlags(window)
-
-    res := true
-    res &= w >= MIN_WINDOW_SIZE.x && h >= MIN_WINDOW_SIZE.y
-    res &= !(.MINIMIZED in window_flags)
-    res &= !(.HIDDEN in window_flags)
-    return res
-}
-
-Key_State :: struct
-{
-    pressed: bool,
-    pressing: bool,
-    released: bool,
-}
-
-Input :: struct
-{
-    pressing_right_click: bool,
-    keys: #sparse[sdl.Scancode]Key_State,
-
-    mouse_dx: f32,  // pixels/dpi (inches), right is positive
-    mouse_dy: f32,  // pixels/dpi (inches), up is positive
-}
-
-// A lot of these things are global because this is just an example,
-// so I don't want to clutter useful things with boilerplate code.
-
-INPUT: Input
-
-Camera_Movement_Mode :: enum
-{
-    Rotate_Around_Origin = 0,
-    First_Person,
-}
-
-DELTA_TIME: f32
-
-compute_world_to_view :: proc() -> matrix[4, 4]f32
-{
-    @(static) cam_mode := Camera_Movement_Mode.Rotate_Around_Origin
-    if INPUT.keys[.SPACE].pressed {
-        cam_mode = Camera_Movement_Mode((int(cam_mode) + 1) % len(Camera_Movement_Mode))
-    }
-
-    switch cam_mode
-    {
-        case .Rotate_Around_Origin: return rotating_camera_view()
-        case .First_Person:         return first_person_camera_view()
-    }
-
-    return 1
-}
-
-first_person_camera_view :: proc() -> matrix[4, 4]f32
-{
-    @(static) cam_pos: [3]f32 = { 0, 2.5, -10 }
-
-    @(static) angle: [2]f32
-
-    cam_rot: quaternion128 = 1
-
-    mouse_sensitivity := math.to_radians_f32(0.2)  // Radians per pixel
-    mouse: [2]f32
-    if INPUT.pressing_right_click
-    {
-        mouse.x = INPUT.mouse_dx * mouse_sensitivity
-        mouse.y = INPUT.mouse_dy * mouse_sensitivity
-    }
-
-    angle += mouse
-
-    // Wrap angle.x
-    for angle.x < 0 do angle.x += 2*math.PI
-    for angle.x > 2*math.PI do angle.x -= 2*math.PI
-
-    angle.y = clamp(angle.y, math.to_radians_f32(-90), math.to_radians_f32(90))
-    y_rot := linalg.quaternion_angle_axis(angle.y, [3]f32 { -1, 0, 0 })
-    x_rot := linalg.quaternion_angle_axis(angle.x, [3]f32 { 0, 1, 0 })
-    cam_rot = x_rot * y_rot
-
-    // Movement
-    @(static) cur_vel: [3]f32
-    move_speed: f32 : 6.0
-    move_speed_fast: f32 : 15.0
-    move_accel: f32 : 300.0
-
-    keyboard_dir_xz: [3]f32
-    keyboard_dir_y: f32
-    if INPUT.pressing_right_click
-    {
-        keyboard_dir_xz.x = f32(int(INPUT.keys[.D].pressing) - int(INPUT.keys[.A].pressing))
-        keyboard_dir_xz.z = f32(int(INPUT.keys[.W].pressing) - int(INPUT.keys[.S].pressing))
-        keyboard_dir_y    = f32(int(INPUT.keys[.E].pressing) - int(INPUT.keys[.Q].pressing))
-
-        // It's a "direction" input so its length
-        // should be no more than 1
-        if linalg.dot(keyboard_dir_xz, keyboard_dir_xz) > 1 {
-            keyboard_dir_xz = linalg.normalize(keyboard_dir_xz)
-        }
-
-        if abs(keyboard_dir_y) > 1 {
-            keyboard_dir_y = math.sign(keyboard_dir_y)
-        }
-    }
-
-    target_vel := keyboard_dir_xz * move_speed
-    target_vel = linalg.quaternion_mul_vector3(cam_rot, target_vel)
-    target_vel.y += keyboard_dir_y * move_speed
-
-    cur_vel = approach_linear(cur_vel, target_vel, move_accel * DELTA_TIME)
-    cam_pos += cur_vel * DELTA_TIME
-
-    return world_to_view_mat(cam_pos, cam_rot)
-
-    approach_linear :: proc(cur: [3]f32, target: [3]f32, delta: f32) -> [3]f32
-    {
-        diff := target - cur
-        dist := linalg.length(diff)
-
-        if dist <= delta do return target
-        return cur + diff / dist * delta
-    }
-}
-
-rotating_camera_view :: proc() -> matrix[4, 4]f32
-{
-    @(static) rot_x: f32
-    rot_x = math.mod(rot_x + math.RAD_PER_DEG * 25 * DELTA_TIME, math.RAD_PER_DEG * 360)
-
-    rot := linalg.quaternion_angle_axis(rot_x, [3]f32 { 0, 1, 0 })
-    pos := linalg.quaternion_mul_vector3(rot, [3]f32 { 0, 2.5, -10 })
-
-    return world_to_view_mat(pos, rot)
-}
-
-world_to_view_mat :: proc(cam_pos: [3]f32, cam_rot: quaternion128) -> matrix[4, 4]f32
-{
-    view_rot := linalg.normalize(linalg.quaternion_inverse(cam_rot))
-    view_pos := -cam_pos
-    return #force_inline linalg.matrix4_from_quaternion(view_rot) *
-           #force_inline linalg.matrix4_translate(view_pos)
 }

@@ -52,7 +52,6 @@ main :: proc()
                       interpolation_passes = 4,
                       // Optional: Error value below which lightmap pixels are interpolated instead of rendered.
                       interpolation_threshold = 0.01,
-                      log_stats = false,
                       // Optional: Modifier for the height of the rendered hemispheres above the surface.
                       // -1 -> stick to surface, 0 -> minimum height for interpolated surface normals,
                       // > 0 -> improves gradients on surfaces with interpolated normals due to the flat
