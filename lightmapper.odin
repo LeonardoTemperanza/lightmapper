@@ -25,11 +25,9 @@ SOFTWARE.
 
 package lightmapper
 
-import "core:log"
 import "core:fmt"
 import "core:math"
 import "core:math/rand"
-import "core:math/linalg/glsl"
 import la "core:math/linalg"
 import intr "base:intrinsics"
 import "core:slice"
@@ -152,17 +150,17 @@ init :: proc(device: ^sdl.GPUDevice,
     ctx.cmd_buf = sdl.AcquireGPUCommandBuffer(ctx.device)
     ctx.shaders = shaders
     ctx.validation.ctx_initialized = true
-    using ctx
 
-    interp_threshold = interpolation_threshold
-    num_passes = 1 + 3 * u32(interpolation_passes)
-    hemi_params.size = auto_cast hemisphere_resolution
-    hemi_params.z_near = z_near
-    hemi_params.z_far  = z_far
-    hemi_params.cam_to_surface_distance_modifier = camera_to_surface_distance_modifier
-    hemi_params.clear_color = background_color
-    hemi_params.batch_count = HEMI_BATCH_TEXTURE_SIZE / (hemi_params.size * [2]u32{ 3, 1 })
-    hemi_batch_to_lightmap = make([dynamic][2]u32, hemi_params.batch_count.y * hemi_params.batch_count.x, hemi_params.batch_count.y * hemi_params.batch_count.x)
+    ctx.interp_threshold = interpolation_threshold
+    ctx.num_passes = 1 + 3 * u32(interpolation_passes)
+    ctx.hemi_params.size = auto_cast hemisphere_resolution
+    ctx.hemi_params.z_near = z_near
+    ctx.hemi_params.z_far  = z_far
+    ctx.hemi_params.cam_to_surface_distance_modifier = camera_to_surface_distance_modifier
+    ctx.hemi_params.clear_color = background_color
+    ctx.hemi_params.batch_count = HEMI_BATCH_TEXTURE_SIZE / (ctx.hemi_params.size * [2]u32{ 3, 1 })
+    ctx.hemi_batch_to_lightmap = make([dynamic][2]u32, ctx.hemi_params.batch_count.y * ctx.hemi_params.batch_count.x,
+                                                       ctx.hemi_params.batch_count.y * ctx.hemi_params.batch_count.x)
 
     // Build GPU Resources
 
@@ -172,7 +170,7 @@ init :: proc(device: ^sdl.GPUDevice,
 
     target_usages := sdl.GPUTextureUsageFlags { .COLOR_TARGET, .COMPUTE_STORAGE_READ }
     ensure(sdl.GPUTextureSupportsFormat(device, hemisphere_target_format, .D2, target_usages), "The target format you're currently using is not supported for Lightmapper's usages.")
-    hemi_batch_texture = sdl.CreateGPUTexture(device, {
+    ctx.hemi_batch_texture = sdl.CreateGPUTexture(device, {
         type = .D2,
         format = hemisphere_target_format,
         width = auto_cast HEMI_BATCH_TEXTURE_SIZE.x,
@@ -184,7 +182,7 @@ init :: proc(device: ^sdl.GPUDevice,
 
     depth_usages := sdl.GPUTextureUsageFlags { .DEPTH_STENCIL_TARGET }
     ensure(sdl.GPUTextureSupportsFormat(device, hemisphere_target_depth_format, .D2, depth_usages), "The depth format you're currently using is not supported for Lightmapper's usages.")
-    hemi_batch_depth_texture = sdl.CreateGPUTexture(device, {
+    ctx.hemi_batch_depth_texture = sdl.CreateGPUTexture(device, {
         type = .D2,
         format = hemisphere_target_depth_format,
         width = auto_cast HEMI_BATCH_TEXTURE_SIZE.x,
@@ -198,7 +196,7 @@ init :: proc(device: ^sdl.GPUDevice,
     ensure(sdl.GPUTextureSupportsFormat(device, .R32G32B32A32_FLOAT, .D2, reduced_usages))
     for i in 0..<2
     {
-        hemi_reduce_textures[i] = sdl.CreateGPUTexture(device, {
+        ctx.hemi_reduce_textures[i] = sdl.CreateGPUTexture(device, {
             type = .D2,
             format = .R32G32B32A32_FLOAT,
             width = auto_cast HEMI_BATCH_TEXTURE_SIZE.x,
@@ -753,11 +751,8 @@ postprocess_box_blur :: proc(using ctx: ^Context)
     {
         for x in 0..<lightmap_size.x
         {
-            lm_idx := y * lightmap_size.y + x
             output_color: [4]f32
-
             n := 0
-
             for offset_y in -1..=1
             {
                 for offset_x in -1..=1
@@ -1538,8 +1533,6 @@ pixel_tri_clip :: proc(pixel_top_left: [2]f32, tri: [3][2]f32) -> (res: [16][2]f
 
     left_of :: proc(a: [2]f32, b: [2]f32, c: [2]f32) -> int
     {
-        v0 := b - a
-        v1 := c - b
         res := cross(b - a, c - b)
         if res < 0 do return -1
         if res > 0 do return +1
@@ -1841,4 +1834,12 @@ normalize :: la.normalize
 is_inf :: proc(v: [3]f32) -> bool
 {
     return math.is_inf(v.x) || math.is_inf(v.y) || math.is_inf(v.z)
+}
+
+_fictitious :: proc()
+{
+    // This makes it so -vet doesn't complain about the import of fmt on release mode.
+    // I need the import in debug builds, and there is no way to conditionally import
+    // a package.
+    fmt.println("")
 }

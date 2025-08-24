@@ -29,8 +29,6 @@ import "core:fmt"
 import intr "base:intrinsics"
 import "core:math"
 import "core:math/linalg"
-import "core:mem"
-import "core:os"
 import "core:c"
 
 import stbi "vendor:stb/image"
@@ -154,7 +152,7 @@ main :: proc()
             fmt.println("")
 
             // Post-process the lightmap as you wish.
-            for i in 0..<16
+            for _ in 0..<16
             {
                 lm.postprocess_dilate(lm_ctx)
                 lm.postprocess_dilate(lm_ctx)
@@ -222,7 +220,8 @@ view_results :: proc(window: ^sdl.Window, device: ^sdl.GPUDevice, lm_tex: ^sdl.G
         if swapchain == nil
         {
             sdl.Delay(16)  // Delay a bit.
-            ok := sdl.SubmitGPUCommandBuffer(cmd_buf)
+            ok = sdl.SubmitGPUCommandBuffer(cmd_buf)
+            assert(ok)
             continue
         }
 
@@ -342,7 +341,7 @@ render_scene :: proc(cmd_buf: ^sdl.GPUCommandBuffer, params: lm.Scene_Render_Par
     })
 
     // Render mesh
-    for i in 0..<1
+    for _ in 0..<1
     {
         Uniforms :: struct
         {
@@ -917,9 +916,8 @@ make_pipelines :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Pipelines
     target_format := LIGHTMAP_FORMAT
     swapchain_format := sdl.GetGPUSwapchainTextureFormat(device, window)
 
-    pipelines: Pipelines
-    using pipelines
-    lit = sdl.CreateGPUGraphicsPipeline(device, {
+    p: Pipelines
+    p.lit = sdl.CreateGPUGraphicsPipeline(device, {
         target_info = sdl.GPUGraphicsPipelineTargetInfo {
             num_color_targets = 1,
             color_target_descriptions = raw_data([]sdl.GPUColorTargetDescription {
@@ -947,7 +945,7 @@ make_pipelines :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Pipelines
         vertex_shader = model_to_proj_vert,
         fragment_shader = lit_frag,
     })
-    fullscreen_sample_tex = sdl.CreateGPUGraphicsPipeline(device, {
+    p.fullscreen_sample_tex = sdl.CreateGPUGraphicsPipeline(device, {
         target_info = sdl.GPUGraphicsPipelineTargetInfo {
             num_color_targets = 1,
             color_target_descriptions = raw_data([]sdl.GPUColorTargetDescription {
@@ -975,7 +973,7 @@ make_pipelines :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Pipelines
         vertex_shader = fullscreen_quad_vert,
         fragment_shader = sample_tex_frag,
     })
-    sky = sdl.CreateGPUGraphicsPipeline(device, {
+    p.sky = sdl.CreateGPUGraphicsPipeline(device, {
         target_info = sdl.GPUGraphicsPipelineTargetInfo {
             num_color_targets = 1,
             color_target_descriptions = raw_data([]sdl.GPUColorTargetDescription {
@@ -1002,7 +1000,7 @@ make_pipelines :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Pipelines
         vertex_shader = sky_vert,
         fragment_shader = sky_frag,
     })
-    tonemap = sdl.CreateGPUGraphicsPipeline(device, {
+    p.tonemap = sdl.CreateGPUGraphicsPipeline(device, {
         target_info = sdl.GPUGraphicsPipelineTargetInfo {
             num_color_targets = 1,
             color_target_descriptions = raw_data([]sdl.GPUColorTargetDescription {
@@ -1024,7 +1022,7 @@ make_pipelines :: proc(device: ^sdl.GPUDevice, window: ^sdl.Window) -> Pipelines
         fragment_shader = tonemap_frag,
     })
 
-    return pipelines
+    return p
 }
 
 get_depth_format :: proc(device: ^sdl.GPUDevice) -> sdl.GPUTextureFormat
@@ -1057,7 +1055,6 @@ init_sdl :: proc() -> (^sdl.Window, ^sdl.GPUDevice)
     ok_i := sdl.Init({ .VIDEO, .EVENTS })
     ensure(ok_i)
 
-    event: sdl.Event
     window_flags :: sdl.WindowFlags {
         .RESIZABLE,
         .HIGH_PIXEL_DENSITY,
