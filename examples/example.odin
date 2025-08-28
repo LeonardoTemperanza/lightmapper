@@ -499,7 +499,7 @@ Pipelines :: struct
 
 MAIN_DEPTH_TEXTURE: ^sdl.GPUTexture
 MAIN_TARGET_TEXTURE: ^sdl.GPUTexture
-MAIN_TARGET_FORMAT: sdl.GPUTextureFormat
+MAIN_TARGET_FORMAT :: sdl.GPUTextureFormat.R16G16B16A16_FLOAT
 
 rebuild_screen_resources :: proc(device: ^sdl.GPUDevice, new_size: [2]i32)
 {
@@ -508,7 +508,7 @@ rebuild_screen_resources :: proc(device: ^sdl.GPUDevice, new_size: [2]i32)
     sdl.ReleaseGPUTexture(device, MAIN_TARGET_TEXTURE)
     MAIN_TARGET_TEXTURE = sdl.CreateGPUTexture(device, {
         type = .D2,
-        format = LIGHTMAP_FORMAT,
+        format = MAIN_TARGET_FORMAT,
         width = auto_cast new_size.x,
         height = auto_cast new_size.y,
         layer_count_or_depth = 1,
